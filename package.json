@@ -2,10 +2,10 @@
   "name": "rekuway-idn-mvp",
   "version": "1.0.0",
   "description": "Identity Deadman Network - Self-destructing temporary identities",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node src/index.ts",
-    "start": "ts-node src/index.ts"
+    "build": "tsc",
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@upstash/redis": "^1.36.0",
@@ -15,7 +15,6 @@
     "express-rate-limit": "^7.1.5",
     "uuid": "^9.0.1",
     "typescript": "^5.3.3",
-    "ts-node": "^10.9.2",
     "@types/node": "^20.0.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
