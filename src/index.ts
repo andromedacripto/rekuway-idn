@@ -1,13 +1,13 @@
+// ⚠️ IMPORTANTE: dotenv DEVE ser carregado ANTES de qualquer import!
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes';
 import apiKeyRoutes from './routes/apiKeyRoutes';
 import { securityLogger, rateLimitByIP } from './middleware/securityLogger';
 import { startDeadmanMonitor } from './services/defensiveService';
-
-// Carrega variáveis de ambiente
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,13 +27,14 @@ app.get('/health', (req, res) => {
     status: 'ok',
     service: 'Rekuway IDN',
     version: '1.0.0-MVP',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    redis: process.env.UPSTASH_REDIS_REST_URL ? 'connected' : 'not configured'
   });
 });
 
 // Rotas da API
 app.use('/identity', identityRoutes);
-app.use('/api-keys', apiKeyRoutes); // Nova rota!
+app.use('/api-keys', apiKeyRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -69,6 +70,7 @@ app.listen(PORT, () => {
    
 🛡️  Deadman monitor: ACTIVE
 ⚙️  Environment: ${process.env.NODE_ENV || 'development'}
+🗄️  Database: ${process.env.UPSTASH_REDIS_REST_URL ? 'Redis (Upstash)' : 'In-Memory'}
   `);
 
   // Inicia monitor de deadman switches
