@@ -82,7 +82,7 @@ export async function createApiKey(
   const resetDate = now + (30 * 24 * 60 * 60 * 1000); // +30 dias
   
   const apiKey: ApiKey = {
-    key: hashedKey, // Mostra só parte pra segurança
+    key: plainKey.substring(0, 20) + '...', // Mostra só parte pra segurança
     hashedKey,
     name,
     userId,
