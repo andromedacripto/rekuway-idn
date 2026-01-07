@@ -1,33 +1,61 @@
 # 🔐 Rekuway IDN - Identity Deadman Network
 
-**Self-destructing temporary identities with defensive behavior**
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/andromedacripto/rekuway-idn-mvp/releases/tag/v1.0.0)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-Production%20Ready-success.svg)]()
+[![Node](https://img.shields.io/badge/node-%3E%3D18.x-brightgreen.svg)]()
 
-![Status](https://img.shields.io/badge/status-MVP-green)
-![License](https://img.shields.io/badge/license-MIT-blue)
-![Node](https://img.shields.io/badge/node-%3E%3D18.x-brightgreen)
+**The first identity system with active defense mechanisms.**
+
+Temporary identities that protect themselves through automatic threat detection, regeneration, and self-destruction.
 
 ---
 
-## 🎯 What is Rekuway IDN?
+## 🎯 What Makes Rekuway IDN Unique
 
-A revolutionary system that generates **temporary identities** with **active defense mechanisms**:
+While VPNs hide and encryption protects, **Rekuway IDN fights back**.
 
-- 🛡️ **Self-destruction** when detecting tracking attempts
-- 🔄 **Auto-regeneration** when detecting scraping/bots  
-- 🎭 **Fake metadata** when detecting fingerprinting
-- ⏱️ **Deadman switch** - auto-destroy without periodic confirmation
+| Feature | Traditional Systems | Rekuway IDN |
+|---------|-------------------|-------------|
+| **Identity Type** | Permanent | Temporary |
+| **Defense** | Passive | **Active** |
+| **Threat Response** | Manual | **Automatic** |
+| **Regeneration** | None | **Auto-regeneration** |
+| **Panic Button** | None | **Instant destruction** |
+| **Deadman Switch** | None | **Auto-destroy without check-in** |
 
 ---
 
 ## ✨ Features
 
-- ✅ RSA 2048-bit encryption
-- ✅ 4 paranoia levels (low/medium/high/deadman)
-- ✅ Defensive actions: ALLOW, LIE, REGENERATE, KILL
-- ✅ IP tracking & rate limiting
-- ✅ Security audit logs
-- ✅ Panic button (manual kill)
-- ✅ Background deadman monitor
+### 🛡️ **Active Defense System**
+- Detects tracking attempts in real-time
+- Automatically regenerates identities under attack
+- Returns fake metadata when fingerprinting is detected
+- Self-destructs under coercion
+
+### 🔑 **API Key Authentication**
+- Secure API key generation with tier-based limits
+- Rate limiting per user (100 requests/minute for Startup tier)
+- Monthly identity creation limits (1,000 identities/month)
+
+### ⚙️ **Four Paranoia Levels**
+
+| Level | Max Attempts | Auto-Regenerate | TTL | Use Case |
+|-------|--------------|-----------------|-----|----------|
+| `low` | 10 | After 5 attempts | 24 hours | General privacy |
+| `medium` | 5 | After 3 attempts | 1 hour | Sensitive data |
+| `high` | 3 | After 2 attempts | 30 minutes | Journalism, activism |
+| `deadman` | 1 | After 1 attempt | 5 minutes* | Whistleblowing |
+
+*Deadman mode requires check-in every 60 seconds or identity auto-destroys.
+
+### 🎭 **Four Defense Actions**
+
+1. **ALLOW** - Normal operation, logs activity
+2. **LIE** - Returns fake IP, location, and device metadata
+3. **REGENERATE** - Creates new identity automatically
+4. **KILL** - Permanently destroys identity
 
 ---
 
@@ -38,9 +66,10 @@ A revolutionary system that generates **temporary identities** with **active def
 - npm or yarn
 
 ### Installation
+
 ```bash
 # Clone repository
-git clone https://github.com/YOUR_USERNAME/rekuway-idn-mvp.git
+git clone https://github.com/andromedacripto/rekuway-idn-mvp.git
 cd rekuway-idn-mvp
 
 # Install dependencies
@@ -50,159 +79,325 @@ npm install
 npm run dev
 ```
 
-Server will start on `http://localhost:3000`
+Server starts on `http://localhost:3000`
 
 ---
 
 ## 📡 API Endpoints
 
-### Create Identity
+### 1. Create API Key
+
 ```bash
-POST /identity/new
-Body: { "paranoiaLevel": "medium" }
+POST /api-keys
+Content-Type: application/json
+
+{
+  "userId": "user_001",
+  "name": "My API Key",
+  "tier": "startup"
+}
 ```
 
 **Response:**
 ```json
 {
   "success": true,
-  "identity": { "id": "...", "publicKey": "..." },
-  "privateKey": "..." // ⚠️ Save this! Never shown again
+  "apiKey": {
+    "key": "rkwy_live_abc123...",
+    "tier": "startup",
+    "limits": {
+      "identitiesPerMonth": 1000,
+      "requestsPerMinute": 100
+    }
+  }
+}
+```
+
+⚠️ **Save your API key! It will never be shown again.**
+
+---
+
+### 2. Create Identity
+
+```bash
+POST /identity/new
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
+
+{
+  "paranoiaLevel": "high"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "identity": {
+    "id": "1a3c2608-8c31-4aee-8a59-29926cd500d3",
+    "publicKey": "-----BEGIN PUBLIC KEY-----...",
+    "paranoiaLevel": "high",
+    "expiresAt": 1767763445909,
+    "isAlive": true
+  },
+  "privateKey": "-----BEGIN PRIVATE KEY-----..."
+}
+```
+
+⚠️ **Save your private key! It will never be shown again.**
+
+---
+
+### 3. Validate Identity (With Active Defense)
+
+```bash
+POST /identity/check
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
+
+{
+  "identityId": "1a3c2608-8c31-4aee-8a59-29926cd500d3",
+  "privateKey": "-----BEGIN PRIVATE KEY-----..."
+}
+```
+
+**Possible Responses:**
+
+**ALLOWED - Normal operation:**
+```json
+{
+  "success": true,
+  "action": "ALLOWED",
+  "identity": {
+    "id": "1a3c2608-8c31-4aee-8a59-29926cd500d3",
+    "attempts": 1
+  }
+}
+```
+
+**LYING - Fake metadata returned:**
+```json
+{
+  "success": true,
+  "action": "LYING",
+  "reason": "Fingerprint match detected",
+  "identity": {
+    "metadata": {
+      "ip": "203.0.113.0",
+      "location": "Tokyo, Japan",
+      "device": "Mobile"
+    }
+  }
+}
+```
+
+**REGENERATED - New identity created:**
+```json
+{
+  "success": true,
+  "action": "REGENERATED",
+  "reason": "Exceeded suspicious attempt threshold",
+  "newIdentity": {
+    "id": "f1a632c7-9925-4e0b-9f81-5692b9e91e1e",
+    "publicKey": "-----BEGIN PUBLIC KEY-----...",
+    "privateKey": "-----BEGIN PRIVATE KEY-----...",
+    "expiresAt": 1767765245909
+  }
 }
 ```
 
 ---
 
-### Validate Identity
-```bash
-POST /identity/check
-Body: { "identityId": "...", "privateKey": "..." }
-```
+### 4. Kill Identity (Panic Button)
 
-**Responses:**
-- ✅ `ALLOWED` - Valid access
-- 🎭 `LYING` - Returns fake metadata
-- 🔄 `REGENERATED` - New identity created
-- 💀 `KILLED` - Identity destroyed
-
----
-
-### Kill Identity (Panic Button)
 ```bash
 POST /identity/kill
-Body: { "identityId": "...", "privateKey": "..." }
+Authorization: Bearer YOUR_API_KEY
+Content-Type: application/json
+
+{
+  "identityId": "1a3c2608-8c31-4aee-8a59-29926cd500d3",
+  "privateKey": "-----BEGIN PRIVATE KEY-----..."
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "💀 Identity destroyed successfully"
+}
 ```
 
 ---
 
-### Check Status
+### 5. Check Identity Status
+
 ```bash
 GET /identity/status/:id
+Authorization: Bearer YOUR_API_KEY
 ```
 
----
-
-## 🛡️ Paranoia Levels
-
-| Level | Max Attempts | Regenerate At | Kill At | TTL | Deadman |
-|-------|-------------|---------------|---------|-----|---------|
-| **low** | 10 | 5 | 10 | 24h | ❌ |
-| **medium** | 5 | 3 | 5 | 1h | ❌ |
-| **high** | 3 | 2 | 3 | 30min | ❌ |
-| **deadman** | 1 | 1 | 1 | 5min | ✅ 60s |
+**Response:**
+```json
+{
+  "exists": true,
+  "expiresAt": 1767763445909,
+  "paranoiaLevel": "high",
+  "isAlive": true
+}
+```
 
 ---
 
 ## 🎯 Use Cases
 
-### Whistleblowing
-Journalists & sources can communicate anonymously with auto-destroy on compromise.
+### 🗞️ **Whistleblowing & Journalism**
+Journalists and sources communicate anonymously with auto-destroy on compromise.
 
-### Anonymous Reporting
-Report corruption/crimes without fear of retaliation.
+### 🔒 **Anonymous Reporting**
+Report corruption or crimes without fear of retaliation.
 
-### Privacy-First Apps
+### 🎭 **Privacy-First Applications**
 Dating apps, social networks with true anonymity.
 
-### Activist Protection
+### ✊ **Activist Protection**
 Protests in authoritarian regimes with deadman protection.
+
+### 💼 **Corporate Whistleblowing**
+Employees report violations safely with panic button protection.
+
+---
+
+## 🔐 Security Model
+
+### What Rekuway IDN Protects:
+✅ User identities with active defense  
+✅ Auto-regeneration under attack  
+✅ Fake metadata injection  
+✅ Panic button & deadman switch  
+
+### What You Need to Add:
+- HTTPS/TLS (transport security)
+- WAF/Cloudflare (infrastructure security)
+- Redis encryption (data security for production)
+
+**Rekuway IDN = Identity protection layer**
 
 ---
 
 ## 🗺️ Roadmap
 
-### v1.0 - MVP ✅
-- [x] Core identity system
-- [x] Defensive response logic
+### v1.0 (Current) ✅
+- [x] RSA 2048 encryption
 - [x] 4 paranoia levels
+- [x] Active defense mechanisms
+- [x] API key authentication
+- [x] Rate limiting
 - [x] Panic button
 - [x] Deadman monitor
 
-### v2.0 - Production Ready
-- [ ] Redis/Cloudflare KV storage
-- [ ] Advanced fingerprinting
-- [ ] Webhooks
+### v2.0 (Q2 2025)
+- [ ] Post-quantum cryptography (hybrid RSA + Kyber)
+- [ ] Redis distributed storage
+- [ ] Advanced ML threat detection
+- [ ] Webhooks & real-time alerts
 - [ ] Web dashboard
-- [ ] Rate limiting (Redis-based)
 
-### v3.0 - Enterprise
-- [ ] Machine Learning threat detection
-- [ ] Blockchain audit log
+### v3.0 (Q4 2025)
+- [ ] Full quantum-resistant (Kyber + Dilithium)
+- [ ] Blockchain audit logs
+- [ ] Mobile SDKs (iOS/Android)
 - [ ] Zero-knowledge proofs
-- [ ] Mobile SDKs
+- [ ] P2P distributed network
 
 ---
 
 ## 🧪 Testing
-```bash
-# Manual testing with Thunder Client or Postman
-# See TUTORIAL_TESTE.md for detailed scenarios
+
+The system includes comprehensive logging for security auditing:
+
 ```
+[API_KEY] Created for user landerson_teste (tier: startup)
+[IDENTITY] Created new identity: 1a3c2608-... (level: high)
+[DEFENSE] Event: fingerprint_match | Attempts: 2/3
+[IDENTITY] 💀 KILLED: 1a3c2608-...
+[IDENTITY] Regenerated: old -> new
+```
+
+All defensive actions are logged for compliance and security audits.
 
 ---
 
 ## 📚 Documentation
 
-- [README.md](README.md) - This file
-- [TUTORIAL_TESTE.md](TUTORIAL_TESTE.md) - Testing guide
-- [ROADMAP.md](ROADMAP.md) - Future plans
+- [API Documentation](https://rekuway.com/docs) (Coming soon)
+- [Security Whitepaper](https://rekuway.com/security) (Coming soon)
+- [Integration Guide](https://rekuway.com/integration) (Coming soon)
 
 ---
 
 ## 🤝 Contributing
 
-PRs welcome! Please:
-1. Fork the repo
-2. Create feature branch: `git checkout -b feature/new-feature`
-3. Commit: `git commit -m 'Add new feature'`
-4. Push: `git push origin feature/new-feature`
-5. Open PR
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/new-feature`
+3. Commit your changes: `git commit -m 'Add new feature'`
+4. Push to the branch: `git push origin feature/new-feature`
+5. Open a Pull Request
 
 ---
 
-## ⚠️ Security Notice
+## ⚠️ Important Notes
 
-**This is an MVP!** Not production-ready yet:
-- In-memory storage (data lost on restart)
-- No HTTPS (add reverse proxy)
-- No user authentication
-- Basic rate limiting
+**This is a v1.0 MVP:**
+- Uses in-memory storage (data lost on restart)
+- Requires HTTPS in production
+- No user authentication system yet
+- Basic rate limiting (upgrade to Redis for production)
+
+**For production deployment:**
+- Add Redis for persistent storage
+- Configure HTTPS/SSL certificates
+- Set up proper monitoring and logging
+- Add WAF/DDoS protection (Cloudflare recommended)
 
 ---
 
 ## 📝 License
 
-MIT License - See LICENSE file
+MIT License - See [LICENSE](LICENSE) file for details
 
 ---
 
 ## 👨‍💻 Author
 
-Created with ❤️ by [Your Name]
+**Landerson Gamarra**  
+Rekuway Team
 
 ---
 
-## 🌟 Star this repo if you find it useful!
+## 🌟 Support
 
-**Potential unicorn 🦄 - Help us build the privacy layer of the internet!**
+If you find this project valuable:
+- ⭐ Star this repository
+- 🐛 Report issues
+- 💡 Suggest features
+- 🔗 Share with your network
+
+---
+
+## 📞 Contact
+
+- **Website:** [rekuway.com](https://rekuway.xyz)
+- **Email:** rekuway@gmail.com
+- **Twitter:** [@rekuway](https://twitter.com/rekuway)
+- **LinkedIn:** [Rekuway](https://linkedin.com/company/rekuway)
+
+---
+
+**Rekuway IDN: Your identity. Your shield.** 🛡️
+
+Built with ❤️ for a more private internet.
 
