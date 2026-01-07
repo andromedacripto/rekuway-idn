@@ -10,6 +10,10 @@ import { securityLogger, rateLimitByIP } from './middleware/securityLogger';
 import { startDeadmanMonitor } from './services/defensiveService';
 
 const app = express();
+// Root endpoint for API status
+app.get('/', (req, res) => {
+  res.json({ success: true, message: 'Rekuway IDN API is running ✅' });
+});
 const PORT = process.env.PORT || 3000;
 
 // Middlewares globais
