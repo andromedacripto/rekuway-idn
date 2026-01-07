@@ -57,28 +57,23 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
-// Inicia servidor
-app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════╗
-║     🔐 REKUWAY IDN - MVP v1.0        ║
-║   Identity Deadman Network           ║
-╚════════════════════════════════════════╝
 
-🚀 Server running on port ${PORT}
-📡 Endpoints:
-   POST   /identity/new     - Create identity
-   POST   /identity/check   - Validate + defensive logic
-   POST   /identity/kill    - Destroy identity
-   GET    /identity/status/:id - Check status
-   
-🛡️  Deadman monitor: ACTIVE
-⚙️  Environment: ${process.env.NODE_ENV || 'development'}
-🗄️  Database: ${process.env.UPSTASH_REDIS_REST_URL ? 'Redis (Upstash)' : 'In-Memory'}
-  `);
+// ====================================
+// EXPORT FOR VERCEL SERVERLESS
+// ====================================
+// Nota: app.listen() não funciona em Vercel
+// Apenas exportamos o app e a Vercel cuida do resto
 
-  // Inicia monitor de deadman switches
+// Inicia monitor de deadman switches (se não estiver em serverless)
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    startDeadmanMonitor();
+  });
+} else {
+  // Em produção (Vercel), apenas inicia o monitor
   startDeadmanMonitor();
-});
+}
 
 export default app;
