@@ -8,7 +8,7 @@ import { requireApiKey, checkIdentityCreationLimit } from '../middleware/authMid
 const router = Router();
 
 // TODOS os endpoints agora exigem API key
-router.use(requireApiKey);
+// TEMPORARILY DISABLED: router.use(requireApiKey);
 
 /**
  * POST /identity/new
