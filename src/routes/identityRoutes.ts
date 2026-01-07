@@ -3,13 +3,19 @@ import { createIdentity, validateIdentity, killIdentity } from '../services/iden
 import { defensiveResponse, detectThreatEvent } from '../services/defensiveService';
 import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
+import { requireApiKey, checkIdentityCreationLimit } from '../middleware/authMiddleware';
 
 const router = Router();
+
+// TODOS os endpoints agora exigem API key
+router.use(requireApiKey);
 
 /**
  * POST /identity/new
  * 
  * CRIA UMA NOVA IDENTIDADE TEMPORÁRIA
+ * 
+ * Requer: API key válida
  * 
  * Body:
  * {
@@ -23,7 +29,7 @@ const router = Router();
  *   "privateKey": "..." // ⚠️ SALVE ISSO! Nunca será mostrado novamente
  * }
  */
-router.post('/new', async (req: Request, res: Response) => {
+router.post('/new', checkIdentityCreationLimit, async (req: Request, res: Response) => {
   try {
     const { paranoiaLevel = 'medium' } = req.body;
 

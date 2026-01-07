@@ -1,6 +1,8 @@
 import express from 'express';
+import cors from 'cors';
 import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes';
+import apiKeyRoutes from './routes/apiKeyRoutes';
 import { securityLogger, rateLimitByIP } from './middleware/securityLogger';
 import { startDeadmanMonitor } from './services/defensiveService';
 
@@ -12,6 +14,10 @@ const PORT = process.env.PORT || 3000;
 
 // Middlewares globais
 app.use(express.json());
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+  credentials: true
+}));
 app.use(securityLogger);
 app.use(rateLimitByIP);
 
@@ -27,6 +33,7 @@ app.get('/health', (req, res) => {
 
 // Rotas da API
 app.use('/identity', identityRoutes);
+app.use('/api-keys', apiKeyRoutes); // Nova rota!
 
 // 404 handler
 app.use((req, res) => {

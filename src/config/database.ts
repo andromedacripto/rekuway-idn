@@ -12,6 +12,7 @@ import { Identity } from '../models/Identity';
 class InMemoryKVStore {
   private identities: Map<string, Identity> = new Map();
   private ipTracking: Map<string, { attempts: number; lastAttempt: number }> = new Map();
+  private apiKeys: Map<string, any> = new Map(); // hashedKey -> ApiKey
 
   /**
    * Salva uma identidade no store
@@ -70,6 +71,25 @@ class InMemoryKVStore {
    */
   async clearIPTracking(ip: string): Promise<void> {
     this.ipTracking.delete(ip);
+  }
+
+  /**
+   * API Keys CRUD
+   */
+  async setApiKey(hashedKey: string, apiKey: any): Promise<void> {
+    this.apiKeys.set(hashedKey, apiKey);
+  }
+
+  async getApiKey(hashedKey: string): Promise<any | null> {
+    return this.apiKeys.get(hashedKey) || null;
+  }
+
+  async listApiKeys(): Promise<any[]> {
+    return Array.from(this.apiKeys.values());
+  }
+
+  async deleteApiKey(hashedKey: string): Promise<boolean> {
+    return this.apiKeys.delete(hashedKey);
   }
 
   /**
