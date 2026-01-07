@@ -126,12 +126,21 @@ export async function killIdentity(identityId: string): Promise<boolean> {
  */
 export async function validateIdentity(identityId: string, privateKey: string): Promise<Identity | null> {
   try {
+    console.log(`[DEBUG] ========================================`);
+    console.log(`[DEBUG] Validating identity: ${identityId}`);
+    console.log(`[DEBUG] Private key length: ${privateKey.length}`);
+    
     const identity = await db.getIdentity(identityId);
+    console.log(`[DEBUG] Identity retrieved:`, identity ? 'YES' : 'NO');
 
     if (!identity) {
       console.log(`[IDENTITY] Validation failed: identity ${identityId} not found`);
       return null;
     }
+
+    console.log(`[DEBUG] Identity isAlive: ${identity.isAlive}`);
+    console.log(`[DEBUG] Identity expiresAt: ${identity.expiresAt}`);
+    console.log(`[DEBUG] Current time: ${Date.now()}`);
 
     // Verifica se ainda está viva
     if (!identity.isAlive) {
@@ -147,22 +156,36 @@ export async function validateIdentity(identityId: string, privateKey: string): 
     }
 
     // Valida chave privada
-    if (hashValue(privateKey) !== identity.privateKeyHash) {
+    const providedHash = hashValue(privateKey);
+    const storedHash = identity.privateKeyHash;
+    
+    console.log(`[DEBUG] Provided hash: ${providedHash}`);
+    console.log(`[DEBUG] Stored hash:   ${storedHash}`);
+    console.log(`[DEBUG] Hashes match: ${providedHash === storedHash}`);
+    
+    if (providedHash !== storedHash) {
       console.log(`[IDENTITY] Validation failed: wrong private key for ${identityId}`);
-      
+
       // Incrementa contador de tentativas
       identity.attempts++;
       identity.lastAttemptAt = Date.now();
       await db.setIdentity(identityId, identity);
-      
+
       return null;
     }
 
-    // Atualiza heartbeat se modo deadman
-    if (identity.paranoiaLevel === 'deadman') {
-      identity.lastHeartbeat = Date.now();
-      await db.setIdentity(identityId, identity);
-    }
+    // ✅ SUCESSO - atualiza last attempt
+    identity.lastAttemptAt = Date.now();
+    await db.setIdentity(identityId, identity);
+
+    console.log(`[IDENTITY] ✅ Validation successful for ${identityId}`);
+    return identity;
+
+  } catch (error) {
+    console.error('[IDENTITY] Error validating identity:', error);
+    return null;
+  }
+}
 
     console.log(`[IDENTITY] Validated: ${identityId}`);
     return identity;
