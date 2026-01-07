@@ -95,9 +95,19 @@ class RedisKVStore {
     if (keys.length === 0) return [];
     
     const values = await this.redis.mget(...keys);
+    
     return values
-      .filter(v => v !== null)
-      .map(v => JSON.parse(v as string) as Identity);
+      .filter(v => v !== null && typeof v === 'string')
+      .map(v => {
+        try {
+          return JSON.parse(v as string) as Identity;
+        } catch (error) {
+          console.error(`[DB] Failed to parse identity from list:`, error);
+          return null;
+        }
+      })
+      .filter(v => v !== null) as Identity[];
+  }
   }
 
   /**
