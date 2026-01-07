@@ -58,10 +58,24 @@ class RedisKVStore {
   async getIdentity(id: string): Promise<Identity | null> {
     const key = `identity:${id}`;
     const value = await this.redis.get(key);
-    
+
     if (!value) return null;
-    
-    return JSON.parse(value as string) as Identity;
+
+    // Fallback: se não for string, retorna null (dados corrompidos)
+    if (typeof value !== 'string') {
+      console.error(`[DB] Invalid data type for ${id}: ${typeof value}`);
+      await this.redis.del(key); // Remove dados corrompidos
+      return null;
+    }
+
+    try {
+      return JSON.parse(value as string) as Identity;
+    } catch (error) {
+      console.error(`[DB] Failed to parse identity ${id}:`, error);
+      await this.redis.del(key); // Remove dados corrompidos
+      return null;
+    }
+  }
   }
 
   /**
