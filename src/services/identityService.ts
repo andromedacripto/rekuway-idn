@@ -40,6 +40,7 @@ export async function createIdentity(
     };
 
     // Salva no banco
+    console.log(`[DEBUG] Saving identity with hash: ${identity.privateKeyHash.substring(0, 20)}...`);
     await db.setIdentity(identity.id, identity);
 
     console.log(`[IDENTITY] Created new identity: ${identity.id} (level: ${paranoiaLevel})`);
