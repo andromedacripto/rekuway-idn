@@ -10,7 +10,7 @@ import { Identity } from '../models/Identity';
  * Funciona melhor com firewalls e não precisa de porta TCP
  * 
  * Estrutura:
- * - identities:id -> JSON string
+ * - identity:id -> JSON string (ou objeto auto-parseado pelo Upstash)
  * - ipTracking:ip -> JSON string
  * - apiKeys:hashedKey -> JSON string
  */
@@ -54,14 +54,16 @@ class RedisKVStore {
 
   /**
    * Busca uma identidade por ID
+   * Nota: Upstash pode retornar objeto OU string (auto-parse)
+   */
   async getIdentity(id: string): Promise<Identity | null> {
     const key = `identity:${id}`;
     const value = await this.redis.get(key);
 
     if (!value) return null;
 
-    // Upstash pode retornar objeto OU string
-    if (typeof value === 'object') {
+    // Upstash Redis pode retornar objeto já parseado OU string
+    if (typeof value === 'object' && value !== null) {
       // Se já é objeto, usa direto
       return value as Identity;
     }
@@ -81,9 +83,6 @@ class RedisKVStore {
     console.error(`[DB] Invalid data type for ${id}: ${typeof value}`);
     await this.redis.del(key);
     return null;
-  }
-      return null;
-    }
   }
 
   /**
@@ -105,14 +104,23 @@ class RedisKVStore {
     const values = await this.redis.mget(...keys);
     
     return values
-      .filter(v => v !== null && typeof v === 'string')
+      .filter(v => v !== null)
       .map(v => {
-        try {
-          return JSON.parse(v as string) as Identity;
-        } catch (error) {
-          console.error(`[DB] Failed to parse identity from list:`, error);
-          return null;
+        // Aceita objeto OU string
+        if (typeof v === 'object' && v !== null) {
+          return v as Identity;
         }
+        
+        if (typeof v === 'string') {
+          try {
+            return JSON.parse(v) as Identity;
+          } catch (error) {
+            console.error(`[DB] Failed to parse identity from list:`, error);
+            return null;
+          }
+        }
+        
+        return null;
       })
       .filter(v => v !== null) as Identity[];
   }
@@ -126,7 +134,7 @@ class RedisKVStore {
     const now = Date.now();
 
     if (value) {
-      const existing = JSON.parse(value as string);
+      const existing = typeof value === 'string' ? JSON.parse(value) : value;
       
       // Reseta contador se última tentativa foi há mais de 5 minutos
       if (now - existing.lastAttempt > 300000) {
@@ -169,7 +177,7 @@ class RedisKVStore {
     
     if (!value) return null;
     
-    return JSON.parse(value as string);
+    return typeof value === 'string' ? JSON.parse(value) : value;
   }
 
   async listApiKeys(): Promise<any[]> {
@@ -179,7 +187,7 @@ class RedisKVStore {
     const values = await this.redis.mget(...keys);
     return values
       .filter(v => v !== null)
-      .map(v => JSON.parse(v as string));
+      .map(v => typeof v === 'string' ? JSON.parse(v) : v);
   }
 
   async deleteApiKey(hashedKey: string): Promise<boolean> {
@@ -190,18 +198,15 @@ class RedisKVStore {
 
   /**
    * Limpa identidades expiradas (garbage collector)
-   * No Redis com TTL, isso é automático, mas mantemos para compatibilidade
    */
   async cleanExpired(): Promise<number> {
-    // Redis já limpa automaticamente com TTL
-    // Mas podemos verificar e limpar manualmente se necessário
     const keys = await this.redis.keys('identity:*');
     let cleaned = 0;
 
     for (const key of keys) {
       const value = await this.redis.get(key);
       if (value) {
-        const identity = JSON.parse(value as string) as Identity;
+        const identity = typeof value === 'string' ? JSON.parse(value) : value;
         if (!identity.isAlive) {
           await this.redis.del(key);
           cleaned++;
@@ -216,7 +221,7 @@ class RedisKVStore {
 // Singleton instance
 export const db = new RedisKVStore();
 
-// Auto-cleanup a cada 5 minutos (opcional com Redis TTL)
+// Auto-cleanup a cada 5 minutos
 setInterval(() => {
   db.cleanExpired().then(count => {
     if (count > 0) {
