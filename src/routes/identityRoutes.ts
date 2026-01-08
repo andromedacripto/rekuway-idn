@@ -1,64 +1,36 @@
 import { Router, Request, Response } from 'express';
-import { createIdentity, validateIdentity, killIdentity } from '../services/identityService';
+import { createIdentity, validateIdentity, killIdentity, regenerateIdentity } from '../services/identityService';
 import { defensiveResponse, detectThreatEvent } from '../services/defensiveService';
 import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
-import { requireApiKey } from '../middleware/authMiddleware';
+import paranoiaConfig from '../config/paranoia.json';
 
 const router = Router();
-
-// TODOS os endpoints agora exigem API key
-// TEMPORARILY DISABLED: router.use(requireApiKey);
 
 /**
  * POST /identity/new
  * 
  * CRIA UMA NOVA IDENTIDADE TEMPORÁRIA
- * 
- * Requer: API key válida
- * 
- * Body:
- * {
- *   "paranoiaLevel": "low" | "medium" | "high" | "deadman"
- * }
- * 
- * Response:
- * {
- *   "success": true,
- *   "identity": { id, publicKey, expiresAt, ... },
- *   "privateKey": "..." // ⚠️ SALVE ISSO! Nunca será mostrado novamente
- * }
+ * Esta é a ÚNICA vez que a chave privada é exposta!
  */
 router.post('/new', async (req: Request, res: Response) => {
   try {
     const { paranoiaLevel = 'medium' } = req.body;
 
-    // Valida nível de paranoia
     if (!['low', 'medium', 'high', 'deadman'].includes(paranoiaLevel)) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid paranoia level. Use: low, medium, high, or deadman'
+        error: 'Invalid paranoia level. Must be: low, medium, high, or deadman'
       });
     }
 
-    // Cria identidade
-    const { identity, privateKey } = await createIdentity(paranoiaLevel);
+    const result = await createIdentity(paranoiaLevel);
 
-    // Remove dados sensíveis da resposta
-    const safeIdentity = {
-      id: identity.id,
-      publicKey: identity.publicKey,
-      paranoiaLevel: identity.paranoiaLevel,
-      createdAt: identity.createdAt,
-      expiresAt: identity.expiresAt,
-      isAlive: identity.isAlive
-    };
-
-    res.status(201).json({
+    res.json({
       success: true,
       message: '⚠️ SAVE YOUR PRIVATE KEY! It will never be shown again.',
-      identity: safeIdentity,
-      privateKey: privateKey // Única vez que a chave privada é exposta
+      identity: result.identity,
+      privateKey: result.privateKey
     });
 
   } catch (error) {
@@ -73,23 +45,13 @@ router.post('/new', async (req: Request, res: Response) => {
 /**
  * POST /identity/check
  * 
- * VALIDA IDENTIDADE E EXECUTA LÓGICA DEFENSIVA
- * 
- * Body:
- * {
- *   "identityId": "...",
- *   "privateKey": "..."
- * }
- * 
- * Response pode variar baseado na ação defensiva:
- * - ALLOW: retorna identidade válida
- * - LIE: retorna metadados falsos
- * - REGENERATE: retorna nova identidade
- * - KILL: informa que identidade foi destruída
+ * VALIDA UMA IDENTIDADE COM SISTEMA DEFENSIVO COMPLETO
+ * Implementa as 4 ações: ALLOW, LIE, REGENERATE, KILL
  */
 router.post('/check', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
+    const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
 
     if (!identityId || !privateKey) {
       return res.status(400).json({
@@ -98,86 +60,156 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // Pega IP do cliente
-    const clientIP = (req as any).clientIP || req.ip || 'unknown';
+    console.log(`[API] ========================================`);
+    console.log(`[API] Check from IP: ${clientIP} | Identity: ${identityId}`);
 
-    // Rastreia tentativa por IP
-    const ipAttempts = await db.trackIP(clientIP);
+    // 1. BUSCA IDENTIDADE
+    let identity = await db.getIdentity(identityId);
 
-    // Valida identidade
-    const identity = await validateIdentity(identityId, privateKey);
-
-    if (!identity) {
-      return res.status(401).json({
+    if (!identity || !identity.isAlive) {
+      console.log(`[API] ❌ Identity not found or dead`);
+      return res.status(404).json({
         success: false,
-        error: 'Invalid identity or private key',
-        attempts: ipAttempts
+        error: 'Invalid identity or private key'
       });
     }
 
-    // Calcula tempo desde última tentativa
-    const now = Date.now();
-    const timeSinceLastAttempt = now - identity.lastAttemptAt;
+    const config = paranoiaConfig[identity.paranoiaLevel];
+    console.log(`[API] Level: ${identity.paranoiaLevel} | Attempts: ${identity.attempts}/${config.maxAttempts} | Regenerate: ${config.regenerateThreshold}`);
 
-    // Detecta tipo de ameaça
-    const threatEvent = detectThreatEvent(identity, clientIP, timeSinceLastAttempt);
+    // 2. VALIDA CHAVE PRIVADA
+    const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    // Executa análise defensiva
-    const response = await defensiveResponse(identity, threatEvent, clientIP);
+    // ========================================
+    // VALIDAÇÃO FALHOU (chave errada)
+    // ========================================
+    if (!validatedIdentity) {
+      console.log(`[API] ❌ Validation FAILED`);
 
-    // Responde baseado na ação defensiva decidida
-    switch (response.action) {
-      case DefensiveAction.KILL:
-        return res.status(410).json({
+      // Busca identidade atualizada (attempts incrementado)
+      identity = await db.getIdentity(identityId);
+
+      if (!identity) {
+        return res.status(404).json({
+          success: false,
+          error: 'Invalid identity or private key'
+        });
+      }
+
+      console.log(`[API] Updated attempts: ${identity.attempts}/${config.maxAttempts}`);
+
+      // ⚡ DECISÃO 1: KILL - Atingiu maxAttempts
+      if (identity.attempts >= config.maxAttempts) {
+        console.log(`[API] 💀 KILL - Max attempts reached (${identity.attempts}/${config.maxAttempts})`);
+        await killIdentity(identityId);
+        
+        return res.status(403).json({
           success: false,
           action: 'KILLED',
-          reason: response.reason,
+          reason: `Too many failed attempts (${identity.attempts}/${config.maxAttempts})`,
           message: '💀 Identity has been destroyed'
+        });
+      }
+
+      // ⚡ DECISÃO 2: REGENERATE - Atingiu regenerateThreshold
+      if (config.regenerateThreshold && identity.attempts >= config.regenerateThreshold) {
+        console.log(`[API] 🔄 REGENERATE - Threshold reached (${identity.attempts}/${config.regenerateThreshold})`);
+        
+        const newIdentity = await regenerateIdentity(identityId);
+        
+        if (!newIdentity) {
+          return res.status(500).json({
+            success: false,
+            error: 'Failed to regenerate identity'
+          });
+        }
+
+        return res.json({
+          success: true,
+          action: 'REGENERATE',
+          reason: `Identity regenerated after ${identity.attempts} suspicious attempts`,
+          message: '🔄 Identity regenerated. Old identity destroyed.',
+          newIdentity: {
+            id: newIdentity.identity.id,
+            publicKey: newIdentity.identity.publicKey,
+            privateKey: newIdentity.privateKey,
+            paranoiaLevel: newIdentity.identity.paranoiaLevel,
+            expiresAt: newIdentity.identity.expiresAt
+          }
+        });
+      }
+
+      // ⚡ DECISÃO 3: ALLOW (com warning)
+      console.log(`[API] ⚠️ ALLOW - Failed attempt logged (${identity.attempts}/${config.maxAttempts})`);
+      
+      return res.status(401).json({
+        success: false,
+        action: 'ALLOWED',
+        error: 'Invalid identity or private key',
+        attempts: identity.attempts,
+        remaining: config.maxAttempts - identity.attempts,
+        message: `Attempt ${identity.attempts}/${config.maxAttempts}. ${config.maxAttempts - identity.attempts} attempts remaining.`
+      });
+    }
+
+    // ========================================
+    // VALIDAÇÃO BEM-SUCEDIDA
+    // ========================================
+    console.log(`[API] ✅ Validation SUCCESSFUL`);
+
+    // Detecta tipo de ameaça
+    const timeSinceLastAttempt = Date.now() - validatedIdentity.lastAttemptAt;
+    const threatEvent = detectThreatEvent(validatedIdentity, clientIP, timeSinceLastAttempt);
+
+    console.log(`[API] Threat: ${threatEvent}`);
+
+    // Chama sistema defensivo
+    const defensiveResult = await defensiveResponse(validatedIdentity, threatEvent, clientIP);
+
+    console.log(`[API] Defensive action: ${defensiveResult.action}`);
+    console.log(`[API] ========================================`);
+
+    // Retorna baseado na ação defensiva
+    switch (defensiveResult.action) {
+      case DefensiveAction.KILL:
+        return res.status(403).json({
+          success: false,
+          action: 'KILLED',
+          reason: defensiveResult.reason,
+          message: '💀 Identity destroyed due to suspicious activity'
         });
 
       case DefensiveAction.REGENERATE:
-        return res.status(200).json({
+        return res.json({
           success: true,
-          action: 'REGENERATED',
-          reason: response.reason,
+          action: 'REGENERATE',
+          reason: defensiveResult.reason,
           message: '🔄 Identity regenerated due to suspicious activity',
-          newIdentity: response.newIdentity ? {
-            id: response.newIdentity.identity.id,
-            publicKey: response.newIdentity.identity.publicKey,
-            privateKey: response.newIdentity.privateKey,
-            expiresAt: response.newIdentity.identity.expiresAt
-          } : null
+          newIdentity: defensiveResult.newIdentity
         });
 
       case DefensiveAction.LIE:
-        return res.status(200).json({
+        return res.json({
           success: true,
-          action: 'LYING',
-          reason: response.reason,
+          action: 'LIE',
+          reason: defensiveResult.reason,
           message: '🎭 Returning fake metadata',
-          identity: {
-            id: identity.id,
-            metadata: response.fakeData
-          }
+          identity: defensiveResult.fakeData
         });
 
       case DefensiveAction.ALLOW:
-        return res.status(200).json({
+      default:
+        return res.json({
           success: true,
           action: 'ALLOWED',
-          reason: response.reason,
+          reason: defensiveResult.reason,
           identity: {
-            id: identity.id,
-            publicKey: identity.publicKey,
-            expiresAt: identity.expiresAt,
-            attempts: identity.attempts
+            id: defensiveResult.identity.id,
+            publicKey: defensiveResult.identity.publicKey,
+            paranoiaLevel: defensiveResult.identity.paranoiaLevel,
+            expiresAt: defensiveResult.identity.expiresAt,
+            attempts: defensiveResult.identity.attempts
           }
-        });
-
-      default:
-        return res.status(500).json({
-          success: false,
-          error: 'Unknown defensive action'
         });
     }
 
@@ -191,22 +223,60 @@ router.post('/check', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /identity/regenerate
+ * 
+ * REGENERA UMA IDENTIDADE MANUALMENTE
+ * Mata a antiga e cria nova com mesmo nível de paranoia
+ */
+router.post('/regenerate', async (req: Request, res: Response) => {
+  try {
+    const { identityId, privateKey } = req.body;
+
+    if (!identityId || !privateKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'identityId and privateKey are required'
+      });
+    }
+
+    const validatedIdentity = await validateIdentity(identityId, privateKey);
+
+    if (!validatedIdentity) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid identity or private key'
+      });
+    }
+
+    const newIdentity = await regenerateIdentity(identityId);
+
+    if (!newIdentity) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to regenerate identity'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '🔄 Identity regenerated successfully',
+      identity: newIdentity.identity,
+      privateKey: newIdentity.privateKey
+    });
+
+  } catch (error) {
+    console.error('[API] Error regenerating identity:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to regenerate identity'
+    });
+  }
+});
+
+/**
  * POST /identity/kill
  * 
- * DESTRÓI UMA IDENTIDADE IMEDIATAMENTE
- * Usado como "panic button" ou em situações de coerção
- * 
- * Body:
- * {
- *   "identityId": "...",
- *   "privateKey": "..."
- * }
- * 
- * Response:
- * {
- *   "success": true,
- *   "message": "Identity destroyed"
- * }
+ * PANIC BUTTON - Destrói identidade imediatamente
  */
 router.post('/kill', async (req: Request, res: Response) => {
   try {
@@ -219,30 +289,28 @@ router.post('/kill', async (req: Request, res: Response) => {
       });
     }
 
-    // Valida que o usuário possui a chave privada
-    const identity = await validateIdentity(identityId, privateKey);
+    const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    if (!identity) {
+    if (!validatedIdentity) {
       return res.status(401).json({
         success: false,
         error: 'Invalid identity or private key'
       });
     }
 
-    // Mata identidade
     const killed = await killIdentity(identityId);
 
-    if (killed) {
-      res.status(200).json({
-        success: true,
-        message: '💀 Identity destroyed successfully'
-      });
-    } else {
-      res.status(500).json({
+    if (!killed) {
+      return res.status(500).json({
         success: false,
         error: 'Failed to destroy identity'
       });
     }
+
+    res.json({
+      success: true,
+      message: '💀 Identity destroyed successfully'
+    });
 
   } catch (error) {
     console.error('[API] Error killing identity:', error);
@@ -256,8 +324,7 @@ router.post('/kill', async (req: Request, res: Response) => {
 /**
  * GET /identity/status/:id
  * 
- * VERIFICA STATUS DE UMA IDENTIDADE (sem autenticação)
- * Útil para verificar se uma identidade ainda existe
+ * Verifica status sem autenticação
  */
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
@@ -271,10 +338,15 @@ router.get('/status/:id', async (req: Request, res: Response) => {
       });
     }
 
+    const config = paranoiaConfig[identity.paranoiaLevel];
+
     res.json({
       exists: true,
       expiresAt: identity.expiresAt,
-      paranoiaLevel: identity.paranoiaLevel
+      paranoiaLevel: identity.paranoiaLevel,
+      attempts: identity.attempts,
+      maxAttempts: config.maxAttempts,
+      remaining: config.maxAttempts - identity.attempts
     });
 
   } catch (error) {
