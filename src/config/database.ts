@@ -54,25 +54,34 @@ class RedisKVStore {
 
   /**
    * Busca uma identidade por ID
-   */
   async getIdentity(id: string): Promise<Identity | null> {
     const key = `identity:${id}`;
     const value = await this.redis.get(key);
 
     if (!value) return null;
 
-    // Fallback: se não for string, retorna null (dados corrompidos)
-    if (typeof value !== 'string') {
-      console.error(`[DB] Invalid data type for ${id}: ${typeof value}`);
-      await this.redis.del(key); // Remove dados corrompidos
-      return null;
+    // Upstash pode retornar objeto OU string
+    if (typeof value === 'object') {
+      // Se já é objeto, usa direto
+      return value as Identity;
     }
 
-    try {
-      return JSON.parse(value as string) as Identity;
-    } catch (error) {
-      console.error(`[DB] Failed to parse identity ${id}:`, error);
-      await this.redis.del(key); // Remove dados corrompidos
+    if (typeof value === 'string') {
+      // Se é string, faz parse
+      try {
+        return JSON.parse(value) as Identity;
+      } catch (error) {
+        console.error(`[DB] Failed to parse identity ${id}:`, error);
+        await this.redis.del(key);
+        return null;
+      }
+    }
+
+    // Tipo inválido
+    console.error(`[DB] Invalid data type for ${id}: ${typeof value}`);
+    await this.redis.del(key);
+    return null;
+  }
       return null;
     }
   }
