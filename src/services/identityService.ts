@@ -187,12 +187,3 @@ export async function validateIdentity(identityId: string, privateKey: string): 
     return null;
   }
 }
-
-    console.log(`[IDENTITY] Validated: ${identityId}`);
-    return identity;
-
-  } catch (error) {
-    console.error('[IDENTITY] Error validating identity:', error);
-    return null;
-  }
-}
