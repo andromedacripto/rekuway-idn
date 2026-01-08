@@ -36,33 +36,31 @@ export async function defensiveResponse(
     // Pega configurações do nível de paranoia
     const config = paranoiaConfig[identity.paranoiaLevel];
 
-    // Atualiza tracking de tentativas
-    identity.attempts++;
-    identity.lastAttemptAt = Date.now();
+    // ❌ REMOVIDO: identity.attempts++; 
+    // O incremento já foi feito no identityService quando a validação falhou
 
     // Adiciona IP suspeito se não estiver na lista
     if (!identity.suspiciousIPs.includes(clientIP)) {
       identity.suspiciousIPs.push(clientIP);
+      await db.setIdentity(identity.id, identity);
     }
-
-    // Salva alterações
-    await db.setIdentity(identity.id, identity);
 
     console.log(`[DEFENSE] Event: ${event} | Identity: ${identity.id} | Attempts: ${identity.attempts}/${config.maxAttempts}`);
 
     // DECISÃO 1: KILL (prioridade máxima)
-    if (identity.attempts >= config.killThreshold) {
+    // Mata após 3 tentativas erradas (maxAttempts)
+    if (identity.attempts >= config.maxAttempts) {
       await killIdentity(identity.id);
       
       return {
         action: DefensiveAction.KILL,
-        reason: `Identity killed: exceeded ${config.killThreshold} attempts`,
+        reason: `Too many failed attempts (${identity.attempts}/${config.maxAttempts})`,
         identity: null
       };
     }
 
     // DECISÃO 2: REGENERATE
-    if (identity.attempts >= config.regenerateThreshold) {
+    if (config.regenerateThreshold && identity.attempts >= config.regenerateThreshold) {
       const newIdentity = await regenerateIdentity(identity.id);
       
       return {
@@ -133,7 +131,6 @@ export function detectThreatEvent(
   }
 
   // Scraping: padrão de requisições automáticas
-  // (simplificado - em produção usar detecção mais sofisticada)
   if (identity.attempts > 5) {
     return ThreatEvent.SCRAPING;
   }
