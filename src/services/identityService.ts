@@ -23,7 +23,7 @@ export async function createIdentity(
     const now = Date.now();
     const expiresAt = now + (config.ttlSeconds * 1000);
 
-    // Cria a identidade
+    // Cria a identidade com TODOS os campos
     const identity: Identity = {
       id: uuidv4(),
       publicKey,
@@ -32,24 +32,38 @@ export async function createIdentity(
       expiresAt,
       paranoiaLevel,
       fakeMetadata: generateFakeMetadata(),
+      
+      // 🔥 Contadores do sistema defensivo híbrido
       attempts: 0,
+      totalAttempts: 0,                    // Inicia zerado
+      regenerationCount: 0,                // Inicia zerado
+      attemptsAfterRegenerate: 0,          // Inicia zerado
+      
       lastAttemptAt: now,
       suspiciousIPs: [],
+      isAlive: true,
+      
+      // Deadman switch (só para nível deadman)
       lastHeartbeat: paranoiaLevel === 'deadman' ? now : undefined,
-      isAlive: true
+      lastCheckIn: paranoiaLevel === 'deadman' ? now : undefined,
+      deadmanTimerSeconds: paranoiaLevel === 'deadman' ? config.deadmanTimer : undefined
     };
 
     // Salva no banco
-    console.log(`[DEBUG] Saving identity with hash: ${identity.privateKeyHash.substring(0, 20)}...`);
+    console.log(`[IDENTITY] Creating identity: ${identity.id}`);
+    console.log(`[IDENTITY]   ├─ Level: ${paranoiaLevel}`);
+    console.log(`[IDENTITY]   ├─ Hash: ${identity.privateKeyHash.substring(0, 20)}...`);
+    console.log(`[IDENTITY]   └─ Expires: ${new Date(expiresAt).toISOString()}`);
+    
     await db.setIdentity(identity.id, identity);
 
-    console.log(`[IDENTITY] Created new identity: ${identity.id} (level: ${paranoiaLevel})`);
+    console.log(`[IDENTITY] ✅ Created: ${identity.id}`);
 
     // Retorna identidade + chave privada (usuário deve guardar a chave!)
     return { identity, privateKey };
 
   } catch (error) {
-    console.error('[IDENTITY] Error creating identity:', error);
+    console.error('[IDENTITY] ❌ Error creating identity:', error);
     throw new Error('Failed to create identity');
   }
 }
@@ -70,18 +84,33 @@ export async function regenerateIdentity(oldIdentityId: string): Promise<{ ident
       return null;
     }
 
+    console.log(`[IDENTITY] 🔄 Regenerating: ${oldIdentityId}`);
+    console.log(`[IDENTITY]   ├─ Old total attempts: ${oldIdentity.totalAttempts}`);
+    console.log(`[IDENTITY]   └─ Old regenerations: ${oldIdentity.regenerationCount}`);
+
     // Mata a identidade antiga
     await killIdentity(oldIdentityId);
 
     // Cria nova identidade com o mesmo nível de paranoia
-    const newIdentity = await createIdentity(oldIdentity.paranoiaLevel);
+    const newIdentityResult = await createIdentity(oldIdentity.paranoiaLevel);
+    
+    // 🔥 IMPORTANTE: Transfere contadores para nova identidade
+    const newIdentity = newIdentityResult.identity;
+    newIdentity.totalAttempts = oldIdentity.totalAttempts || 0;
+    newIdentity.regenerationCount = (oldIdentity.regenerationCount || 0) + 1;
+    newIdentity.attemptsAfterRegenerate = 0; // Reseta contador pós-regeneração
+    
+    // Salva identidade com contadores transferidos
+    await db.setIdentity(newIdentity.id, newIdentity);
 
-    console.log(`[IDENTITY] Regenerated: ${oldIdentityId} -> ${newIdentity.identity.id}`);
+    console.log(`[IDENTITY] ✅ Regenerated: ${oldIdentityId} -> ${newIdentity.id}`);
+    console.log(`[IDENTITY]   ├─ New total attempts: ${newIdentity.totalAttempts}`);
+    console.log(`[IDENTITY]   └─ New regenerations: ${newIdentity.regenerationCount}`);
 
-    return newIdentity;
+    return { identity: newIdentity, privateKey: newIdentityResult.privateKey };
 
   } catch (error) {
-    console.error('[IDENTITY] Error regenerating identity:', error);
+    console.error('[IDENTITY] ❌ Error regenerating identity:', error);
     throw new Error('Failed to regenerate identity');
   }
 }
@@ -101,6 +130,11 @@ export async function killIdentity(identityId: string): Promise<boolean> {
       return false;
     }
 
+    console.log(`[IDENTITY] 💀 KILLING: ${identityId}`);
+    console.log(`[IDENTITY]   ├─ Total attempts: ${identity.totalAttempts}`);
+    console.log(`[IDENTITY]   ├─ Regenerations: ${identity.regenerationCount}`);
+    console.log(`[IDENTITY]   └─ Attempts after regenerate: ${identity.attemptsAfterRegenerate}`);
+
     // Marca como morta
     identity.isAlive = false;
     await db.setIdentity(identityId, identity);
@@ -108,12 +142,12 @@ export async function killIdentity(identityId: string): Promise<boolean> {
     // Deleta do banco
     await db.deleteIdentity(identityId);
 
-    console.log(`[IDENTITY] 💀 KILLED: ${identityId}`);
+    console.log(`[IDENTITY] ☠️ KILLED: ${identityId}`);
 
     return true;
 
   } catch (error) {
-    console.error('[IDENTITY] Error killing identity:', error);
+    console.error('[IDENTITY] ❌ Error killing identity:', error);
     return false;
   }
 }
@@ -127,31 +161,32 @@ export async function killIdentity(identityId: string): Promise<boolean> {
  */
 export async function validateIdentity(identityId: string, privateKey: string): Promise<Identity | null> {
   try {
-    console.log(`[DEBUG] ========================================`);
-    console.log(`[DEBUG] Validating identity: ${identityId}`);
-    console.log(`[DEBUG] Private key length: ${privateKey.length}`);
+    console.log(`[IDENTITY] ========================================`);
+    console.log(`[IDENTITY] 🔍 Validating: ${identityId}`);
     
     const identity = await db.getIdentity(identityId);
-    console.log(`[DEBUG] Identity retrieved:`, identity ? 'YES' : 'NO');
 
     if (!identity) {
-      console.log(`[IDENTITY] Validation failed: identity ${identityId} not found`);
+      console.log(`[IDENTITY] ❌ Not found: ${identityId}`);
       return null;
     }
 
-    console.log(`[DEBUG] Identity isAlive: ${identity.isAlive}`);
-    console.log(`[DEBUG] Identity expiresAt: ${identity.expiresAt}`);
-    console.log(`[DEBUG] Current time: ${Date.now()}`);
+    console.log(`[IDENTITY] 📊 Current state:`);
+    console.log(`[IDENTITY]   ├─ isAlive: ${identity.isAlive}`);
+    console.log(`[IDENTITY]   ├─ attempts: ${identity.attempts}`);
+    console.log(`[IDENTITY]   ├─ totalAttempts: ${identity.totalAttempts || 0}`);
+    console.log(`[IDENTITY]   ├─ regenerations: ${identity.regenerationCount || 0}`);
+    console.log(`[IDENTITY]   └─ attemptsAfterRegenerate: ${identity.attemptsAfterRegenerate || 0}`);
 
     // Verifica se ainda está viva
     if (!identity.isAlive) {
-      console.log(`[IDENTITY] Validation failed: identity ${identityId} is dead`);
+      console.log(`[IDENTITY] ❌ Dead: ${identityId}`);
       return null;
     }
 
     // Verifica se expirou
     if (identity.expiresAt < Date.now()) {
-      console.log(`[IDENTITY] Validation failed: identity ${identityId} expired`);
+      console.log(`[IDENTITY] ❌ Expired: ${identityId}`);
       await killIdentity(identityId);
       return null;
     }
@@ -160,30 +195,32 @@ export async function validateIdentity(identityId: string, privateKey: string): 
     const providedHash = hashValue(privateKey);
     const storedHash = identity.privateKeyHash;
     
-    console.log(`[DEBUG] Provided hash: ${providedHash}`);
-    console.log(`[DEBUG] Stored hash:   ${storedHash}`);
-    console.log(`[DEBUG] Hashes match: ${providedHash === storedHash}`);
+    const hashMatch = providedHash === storedHash;
+    console.log(`[IDENTITY] 🔑 Hash match: ${hashMatch}`);
     
-    if (providedHash !== storedHash) {
-      console.log(`[IDENTITY] Validation failed: wrong private key for ${identityId}`);
+    if (!hashMatch) {
+      console.log(`[IDENTITY] ❌ Wrong key for ${identityId}`);
 
       // Incrementa contador de tentativas
       identity.attempts++;
       identity.lastAttemptAt = Date.now();
       await db.setIdentity(identityId, identity);
 
+      console.log(`[IDENTITY] 📈 Attempts incremented to: ${identity.attempts}`);
       return null;
     }
 
-    // ✅ SUCESSO - atualiza last attempt
+    // ✅ SUCESSO - atualiza last attempt mas NÃO incrementa attempts
     identity.lastAttemptAt = Date.now();
     await db.setIdentity(identityId, identity);
 
-    console.log(`[IDENTITY] ✅ Validation successful for ${identityId}`);
+    console.log(`[IDENTITY] ✅ Valid key for ${identityId}`);
+    console.log(`[IDENTITY] ========================================`);
+    
     return identity;
 
   } catch (error) {
-    console.error('[IDENTITY] Error validating identity:', error);
+    console.error('[IDENTITY] ❌ Error validating identity:', error);
     return null;
   }
 }

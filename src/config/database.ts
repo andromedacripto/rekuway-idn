@@ -39,50 +39,99 @@ class RedisKVStore {
   }
 
   /**
+   * 🔥 MÉTODO SET GENÉRICO (necessário para identityRoutes.ts)
+   * Salva qualquer dado no Redis com TTL opcional
+   */
+  async set(key: string, value: any, ttlSeconds?: number): Promise<boolean> {
+    try {
+      const serialized = JSON.stringify(value);
+      
+      if (ttlSeconds && ttlSeconds > 0) {
+        await this.redis.set(key, serialized, { ex: ttlSeconds });
+      } else {
+        await this.redis.set(key, serialized);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`[DB] Error setting key ${key}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 🔥 MÉTODO GET GENÉRICO
+   * Busca qualquer dado do Redis
+   */
+  async get(key: string): Promise<any | null> {
+    try {
+      const value = await this.redis.get(key);
+      
+      if (!value) {
+        return null;
+      }
+
+      // Upstash pode retornar objeto já parseado OU string
+      if (typeof value === 'object' && value !== null) {
+        return value;
+      }
+
+      if (typeof value === 'string') {
+        return JSON.parse(value);
+      }
+
+      return value;
+    } catch (error) {
+      console.error(`[DB] Error getting key ${key}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Salva uma identidade no store
+   * Usa set() genérico internamente
    */
   async setIdentity(id: string, identity: Identity): Promise<void> {
     const key = `identity:${id}`;
-    const value = JSON.stringify(identity);
     
     // Calcula TTL em segundos
     const ttlMs = identity.expiresAt - Date.now();
     const ttlSeconds = Math.max(1, Math.floor(ttlMs / 1000));
     
-    await this.redis.set(key, value, { ex: ttlSeconds });
+    await this.set(key, identity, ttlSeconds);
   }
 
   /**
    * Busca uma identidade por ID
-   * Nota: Upstash pode retornar objeto OU string (auto-parse)
+   * Usa get() genérico internamente
    */
   async getIdentity(id: string): Promise<Identity | null> {
     const key = `identity:${id}`;
-    const value = await this.redis.get(key);
+    const value = await this.get(key);
 
-    if (!value) return null;
-
-    // Upstash Redis pode retornar objeto já parseado OU string
-    if (typeof value === 'object' && value !== null) {
-      // Se já é objeto, usa direto
-      return value as Identity;
+    if (!value) {
+      return null;
     }
 
-    if (typeof value === 'string') {
-      // Se é string, faz parse
-      try {
-        return JSON.parse(value) as Identity;
-      } catch (error) {
-        console.error(`[DB] Failed to parse identity ${id}:`, error);
-        await this.redis.del(key);
-        return null;
-      }
+    // Validação básica de estrutura
+    if (!value.id || !value.publicKey) {
+      console.error(`[DB] Invalid identity structure for ${id}`);
+      await this.redis.del(key);
+      return null;
     }
 
-    // Tipo inválido
-    console.error(`[DB] Invalid data type for ${id}: ${typeof value}`);
-    await this.redis.del(key);
-    return null;
+    // 🔥 INICIALIZA NOVOS CAMPOS SE NÃO EXISTIREM (retrocompatibilidade)
+    if (typeof value.totalAttempts === 'undefined') {
+      value.totalAttempts = value.attempts || 0;
+    }
+    if (typeof value.regenerationCount === 'undefined') {
+      value.regenerationCount = 0;
+    }
+    if (typeof value.attemptsAfterRegenerate === 'undefined') {
+      value.attemptsAfterRegenerate = 0;
+    }
+
+    return value as Identity;
   }
 
   /**
@@ -130,27 +179,25 @@ class RedisKVStore {
    */
   async trackIP(ip: string): Promise<number> {
     const key = `ipTracking:${ip}`;
-    const value = await this.redis.get(key);
+    const value = await this.get(key);
     const now = Date.now();
 
     if (value) {
-      const existing = typeof value === 'string' ? JSON.parse(value) : value;
-      
       // Reseta contador se última tentativa foi há mais de 5 minutos
-      if (now - existing.lastAttempt > 300000) {
+      if (now - value.lastAttempt > 300000) {
         const newData = { attempts: 1, lastAttempt: now };
-        await this.redis.set(key, JSON.stringify(newData), { ex: 300 });
+        await this.set(key, newData, 300);
         return 1;
       }
       
-      existing.attempts++;
-      existing.lastAttempt = now;
-      await this.redis.set(key, JSON.stringify(existing), { ex: 300 });
-      return existing.attempts;
+      value.attempts++;
+      value.lastAttempt = now;
+      await this.set(key, value, 300);
+      return value.attempts;
     }
 
     const newData = { attempts: 1, lastAttempt: now };
-    await this.redis.set(key, JSON.stringify(newData), { ex: 300 });
+    await this.set(key, newData, 300);
     return 1;
   }
 
@@ -167,17 +214,12 @@ class RedisKVStore {
    */
   async setApiKey(hashedKey: string, apiKey: any): Promise<void> {
     const key = `apiKey:${hashedKey}`;
-    const value = JSON.stringify(apiKey);
-    await this.redis.set(key, value);
+    await this.set(key, apiKey);
   }
 
   async getApiKey(hashedKey: string): Promise<any | null> {
     const key = `apiKey:${hashedKey}`;
-    const value = await this.redis.get(key);
-    
-    if (!value) return null;
-    
-    return typeof value === 'string' ? JSON.parse(value) : value;
+    return await this.get(key);
   }
 
   async listApiKeys(): Promise<any[]> {
@@ -204,10 +246,9 @@ class RedisKVStore {
     let cleaned = 0;
 
     for (const key of keys) {
-      const value = await this.redis.get(key);
+      const value = await this.get(key);
       if (value) {
-        const identity = typeof value === 'string' ? JSON.parse(value) : value;
-        if (!identity.isAlive) {
+        if (!value.isAlive || value.expiresAt < Date.now()) {
           await this.redis.del(key);
           cleaned++;
         }
@@ -215,6 +256,48 @@ class RedisKVStore {
     }
 
     return cleaned;
+  }
+
+  /**
+   * 🔥 MÉTODO DELETE GENÉRICO
+   * Deleta qualquer chave
+   */
+  async delete(key: string): Promise<boolean> {
+    try {
+      const result = await this.redis.del(key);
+      return result > 0;
+    } catch (error) {
+      console.error(`[DB] Error deleting key ${key}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 🔥 MÉTODO EXISTS
+   * Verifica se chave existe
+   */
+  async exists(key: string): Promise<boolean> {
+    try {
+      const result = await this.redis.exists(key);
+      return result === 1;
+    } catch (error) {
+      console.error(`[DB] Error checking existence of ${key}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * 🔥 MÉTODO KEYS
+   * Lista chaves por padrão
+   */
+  async keys(pattern: string): Promise<string[]> {
+    try {
+      const keys = await this.redis.keys(pattern);
+      return keys || [];
+    } catch (error) {
+      console.error(`[DB] Error listing keys ${pattern}:`, error);
+      return [];
+    }
   }
 }
 
@@ -225,9 +308,9 @@ export const db = new RedisKVStore();
 setInterval(() => {
   db.cleanExpired().then(count => {
     if (count > 0) {
-      console.log(`[DB] Cleaned ${count} expired identities`);
+      console.log(`[DB] 🧹 Cleaned ${count} expired identities`);
     }
   }).catch(err => {
-    console.error('[DB] Cleanup error:', err);
+    console.error('[DB] ❌ Cleanup error:', err);
   });
 }, 300000);

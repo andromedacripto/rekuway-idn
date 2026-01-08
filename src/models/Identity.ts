@@ -1,49 +1,96 @@
 /**
- * Interface que define a estrutura de uma identidade temporária
+ * Identity Model
+ * 
+ * Representa uma identidade temporária com sistema de defesa ativo
  */
+
 export interface Identity {
-  id: string;                    // UUID único da identidade
-  publicKey: string;             // Chave pública para validação
-  privateKeyHash: string;        // Hash da chave privada (nunca expor a chave real)
-  createdAt: number;             // Timestamp de criação
-  expiresAt: number;             // Timestamp de expiração
+  id: string;
+  publicKey: string;
+  privateKeyHash: string;
+  privateKey?: string; // Só existe na criação
+  createdAt: number;
+  expiresAt: number;
   paranoiaLevel: 'low' | 'medium' | 'high' | 'deadman';
   
-  // Dados falsos que podem ser retornados quando em modo "mentir"
+  // Metadados falsos para fingerprinting
   fakeMetadata: {
     ip: string;
-    userAgent: string;
     location: string;
+    userAgent: string;
     device: string;
   };
   
-  // Tracking de tentativas suspeitas
-  attempts: number;              // Contador de tentativas de acesso
-  lastAttemptAt: number;         // Timestamp da última tentativa
-  suspiciousIPs: string[];       // Lista de IPs suspeitos
+  // Sistema defensivo HÍBRIDO
+  attempts: number;                    // Tentativas na identidade atual
+  totalAttempts: number;               // Tentativas totais (NUNCA reseta) 🔥
+  regenerationCount: number;           // Quantas vezes regenerou 🔥
+  attemptsAfterRegenerate: number;     // Tentativas após última regeneração 🔥
   
-  // Deadman switch
-  lastHeartbeat?: number;        // Última confirmação de atividade legítima
-  isAlive: boolean;              // Status da identidade
+  lastAttemptAt: number;
+  suspiciousIPs: string[];
+  isAlive: boolean;
+  
+  // Deadman switch (só para paranoiaLevel = 'deadman')
+  lastHeartbeat?: number;              // Última confirmação de vida 🔥
+  lastCheckIn?: number;                // Alias para lastHeartbeat
+  deadmanTimerSeconds?: number;
 }
 
 /**
- * Eventos que podem ser detectados pelo sistema
+ * Threat Event Types
  */
 export enum ThreatEvent {
-  BRUTE_FORCE = 'brute_force',           // Múltiplas tentativas seguidas
-  SCRAPING = 'scraping',                 // Comportamento de bot
-  FINGERPRINT_MATCH = 'fingerprint_match', // Mesmo fingerprint detectado
-  RATE_LIMIT = 'rate_limit',             // Taxa de requisições anormal
-  DEADMAN_TIMEOUT = 'deadman_timeout'    // Timeout do deadman switch
+  NONE = 'none',
+  BRUTE_FORCE = 'brute_force',                   // 🔥 Múltiplas tentativas
+  SCRAPING = 'scraping',                         // 🔥 Comportamento de bot
+  SUSPICIOUS_TIMING = 'suspicious_timing',
+  FINGERPRINT_MATCH = 'fingerprint_match',
+  RATE_LIMIT = 'rate_limit',                     // 🔥 Taxa anormal
+  RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded',   // Alias
+  INVALID_KEY = 'invalid_key',
+  DEADMAN_TIMEOUT = 'deadman_timeout'
 }
 
 /**
- * Ações defensivas que o sistema pode tomar
+ * Defensive Actions
+ * 
+ * Sistema de defesa em camadas:
+ * ALLOW → REGENERATE → LIE → KILL
  */
 export enum DefensiveAction {
-  ALLOW = 'allow',           // Permitir acesso normal
-  LIE = 'lie',              // Retornar metadados falsos
-  REGENERATE = 'regenerate', // Gerar nova identidade
-  KILL = 'kill'             // Destruir identidade imediatamente
+  ALLOW = 'ALLOWED',           // ⚠️ Registra tentativa
+  LIE = 'LIE',                 // 🎭 Retorna dados falsos
+  REGENERATE = 'REGENERATE',   // 🔄 Cria nova identidade
+  KILL = 'KILL'                // 💀 Destruição permanente
+}
+
+/**
+ * Resultado da análise defensiva
+ */
+export interface DefensiveResponse {
+  action: DefensiveAction;
+  reason: string;
+  identity?: Identity;
+  fakeData?: any;
+  newIdentity?: {
+    id: string;
+    publicKey: string;
+    privateKey: string;
+    paranoiaLevel: string;
+    expiresAt: number;
+  };
+}
+
+/**
+ * Configuração de nível de paranoia
+ */
+export interface ParanoiaConfig {
+  maxAttempts: number;              // Limite absoluto para KILL
+  regenerateThreshold: number;      // Quando regenerar
+  killThreshold: number;            // (deprecated, usar maxAttempts)
+  ttlSeconds: number;
+  fakeFingerprintEnabled: boolean;
+  deadmanTimer: number | null;
+  description: string;
 }
