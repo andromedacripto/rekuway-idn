@@ -105,7 +105,6 @@ class RedisKVStore {
           console.error(`[DB] Failed to parse identity from list:`, error);
           return null;
         }
-      })
       .filter(v => v !== null) as Identity[];
   }
   }
