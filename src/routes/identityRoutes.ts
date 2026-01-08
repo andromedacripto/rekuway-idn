@@ -209,27 +209,29 @@ router.post('/check', async (req: Request, res: Response) => {
 
     // ========================================
     // 💀 DECISÃO 1: KILL (prioridade máxima)
-    // Condições:
-    // - totalAttempts >= maxAttempts OU
-    // - attemptsAfterRegenerate >= 2 (após regeneração)
+    // Lógica:
+    // - SE JÁ REGENEROU: usa attemptsAfterRegenerate >= 2
+    // - SE NÃO REGENEROU: usa totalAttempts >= maxAttempts
     // ========================================
-    const shouldKillByTotal = identity.totalAttempts >= config.maxAttempts;
-    const shouldKillByRegenerate = identity.regenerationCount > 0 && identity.attemptsAfterRegenerate >= 2;
+    let shouldKill = false;
+    let killReason = '';
 
-    if (shouldKillByTotal || shouldKillByRegenerate) {
+    if (identity.regenerationCount > 0) {
+      // Após regeneração: mata na 2ª tentativa
+      shouldKill = identity.attemptsAfterRegenerate >= 2;
+      killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
+    } else {
+      // Antes de regenerar: mata quando atinge maxAttempts
+      shouldKill = identity.totalAttempts >= config.maxAttempts;
+      killReason = `Maximum total attempts exceeded (${identity.totalAttempts}/${config.maxAttempts})`;
+    }
+
+    if (shouldKill) {
       console.log(`[API] 💀 KILL TRIGGERED!`);
-      
-      if (shouldKillByTotal) {
-        console.log(`[API]    ├─ Reason: Total attempts limit`);
-        console.log(`[API]    ├─ Total: ${identity.totalAttempts}/${config.maxAttempts}`);
-      }
-      
-      if (shouldKillByRegenerate) {
-        console.log(`[API]    ├─ Reason: 2nd attempt after regeneration`);
-        console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
-        console.log(`[API]    ├─ After regenerate: ${identity.attemptsAfterRegenerate}/2`);
-      }
-      
+      console.log(`[API]    ├─ Reason: ${killReason}`);
+      console.log(`[API]    ├─ Total: ${identity.totalAttempts}/${config.maxAttempts}`);
+      console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
+      console.log(`[API]    ├─ After regenerate: ${identity.attemptsAfterRegenerate}`);
       console.log(`[API]    └─ Action: 💀 PERMANENT DESTRUCTION`);
       
       await killIdentity(identityId);
@@ -237,9 +239,7 @@ router.post('/check', async (req: Request, res: Response) => {
       return res.status(403).json({
         success: false,
         action: 'KILLED',
-        reason: shouldKillByRegenerate 
-          ? `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`
-          : `Maximum total attempts exceeded (${identity.totalAttempts}/${config.maxAttempts})`,
+        reason: killReason,
         message: '💀 Identity permanently destroyed',
         details: {
           totalAttempts: identity.totalAttempts,
