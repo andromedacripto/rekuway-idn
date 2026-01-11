@@ -69,6 +69,33 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
+    // 🔥 DEADMAN CHECK - Verificar se expirou ANTES de validar
+    if (identity.paranoiaLevel === 'deadman') {
+      const config = paranoiaConfig.deadman;
+      const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
+      const lastHeartbeat = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
+      const timeSinceHeartbeat = Date.now() - lastHeartbeat;
+
+      console.log(`[API] 💓 DEADMAN CHECK:`);
+      console.log(`[API]    ├─ Last heartbeat: ${new Date(lastHeartbeat).toISOString()}`);
+      console.log(`[API]    ├─ Time since: ${Math.floor(timeSinceHeartbeat / 1000)}s`);
+      console.log(`[API]    └─ Timer limit: ${config.deadmanTimer}s`);
+
+      if (timeSinceHeartbeat > deadmanTimerMs) {
+        console.log(`[API] 💀 DEADMAN TIMER EXPIRED!`);
+        console.log(`[API]    └─ Killing identity automatically...`);
+        
+        await killIdentity(identityId);
+
+        return res.status(403).json({
+          success: false,
+          error: 'Identity not found or already destroyed',
+          reason: 'Deadman timer expired',
+          timeSinceHeartbeat: Math.floor(timeSinceHeartbeat / 1000)
+        });
+      }
+    }
+
     const config = paranoiaConfig[identity.paranoiaLevel];
     
     if (typeof identity.totalAttempts === 'undefined') {
@@ -92,6 +119,14 @@ router.post('/check', async (req: Request, res: Response) => {
 
     if (validatedIdentity) {
       console.log(`[API] ✅ Validation SUCCESSFUL`);
+
+      // 🔥 ATUALIZAR HEARTBEAT SE FOR DEADMAN
+      if (identity.paranoiaLevel === 'deadman') {
+        const now = Date.now();
+        identity.lastHeartbeat = now;
+        identity.lastCheckIn = now;
+        console.log(`[API] 💓 Heartbeat auto-updated`);
+      }
 
       identity.attempts = 0;
       identity.attemptsAfterRegenerate = 0;
