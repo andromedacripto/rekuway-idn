@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { createIdentity, validateIdentity, killIdentity, regenerateIdentity } from '../services/identityService';
 import { defensiveResponse, detectThreatEvent } from '../services/defensiveService';
+import { updateHeartbeat } from '../services/heartbeat';
 import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
 import paranoiaConfig from '../config/paranoia.json';
@@ -9,7 +10,6 @@ const router = Router();
 
 /**
  * POST /identity/new
- * CRIA UMA NOVA IDENTIDADE TEMPORÁRIA
  */
 router.post('/new', async (req: Request, res: Response) => {
   try {
@@ -42,20 +42,6 @@ router.post('/new', async (req: Request, res: Response) => {
 
 /**
  * POST /identity/check
- * 
- * 🔥 SISTEMA DE DEFESA HÍBRIDA INTELIGENTE - CORRIGIDO
- * 
- * CAMADAS DE DEFESA:
- * 1. ALLOW → Registra tentativa
- * 2. REGENERATE → Cria nova identidade
- * 3. LIE → Retorna dados falsos (1ª falha após regenerar)
- * 4. KILL → Destruição permanente (2ª falha após regenerar)
- * 
- * EXEMPLO HIGH (maxAttempts: 3, regenerateThreshold: 2):
- * - Tentativa 1 ❌ → ALLOW (attempts: 1, total: 1)
- * - Tentativa 2 ❌ → REGENERATE (nova identidade, regenerations: 1)
- * - Tentativa 3 ❌ → LIE! 🎭 (attemptsAfterRegenerate: 1)
- * - Tentativa 4 ❌ → KILL! 💀 (attemptsAfterRegenerate: 2)
  */
 router.post('/check', async (req: Request, res: Response) => {
   try {
@@ -73,9 +59,6 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API] 🔍 Check from IP: ${clientIP}`);
     console.log(`[API] 🆔 Identity: ${identityId}`);
 
-    // ========================================
-    // 1. BUSCA IDENTIDADE
-    // ========================================
     let identity = await db.getIdentity(identityId);
 
     if (!identity || !identity.isAlive) {
@@ -88,7 +71,6 @@ router.post('/check', async (req: Request, res: Response) => {
 
     const config = paranoiaConfig[identity.paranoiaLevel];
     
-    // Inicializa contadores se não existirem
     if (typeof identity.totalAttempts === 'undefined') {
       identity.totalAttempts = identity.attempts;
     }
@@ -106,18 +88,11 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
-    // ========================================
-    // 2. VALIDA CHAVE PRIVADA
-    // ========================================
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    // ========================================
-    // ✅ VALIDAÇÃO BEM-SUCEDIDA
-    // ========================================
     if (validatedIdentity) {
       console.log(`[API] ✅ Validation SUCCESSFUL`);
 
-      // Reseta attempts e attemptsAfterRegenerate
       identity.attempts = 0;
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
@@ -176,12 +151,8 @@ router.post('/check', async (req: Request, res: Response) => {
       }
     }
 
-    // ========================================
-    // ❌ VALIDAÇÃO FALHOU (chave errada)
-    // ========================================
     console.log(`[API] ❌ Validation FAILED - Invalid private key`);
 
-    // Busca identidade atualizada (validateIdentity já incrementou attempts)
     identity = await db.getIdentity(identityId);
 
     if (!identity) {
@@ -191,10 +162,8 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // 🔥 INCREMENTA CONTADORES GLOBAIS
     identity.totalAttempts = (identity.totalAttempts || 0) + 1;
     
-    // 🔥 INCREMENTA attemptsAfterRegenerate SOMENTE SE JÁ REGENEROU
     if (identity.regenerationCount > 0) {
       identity.attemptsAfterRegenerate = (identity.attemptsAfterRegenerate || 0) + 1;
     }
@@ -207,32 +176,20 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
-    // ========================================
-    // 💀 DECISÃO 1: KILL (prioridade máxima)
-    // Lógica:
-    // - SE JÁ REGENEROU: usa attemptsAfterRegenerate >= 2
-    // - SE NÃO REGENEROU: usa totalAttempts >= maxAttempts
-    // ========================================
     let shouldKill = false;
     let killReason = '';
 
     if (identity.regenerationCount > 0) {
-      // Após regeneração: mata na 2ª tentativa
       shouldKill = identity.attemptsAfterRegenerate >= 2;
       killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
     } else {
-      // Antes de regenerar: mata quando atinge maxAttempts
       shouldKill = identity.totalAttempts >= config.maxAttempts;
       killReason = `Maximum total attempts exceeded (${identity.totalAttempts}/${config.maxAttempts})`;
     }
 
     if (shouldKill) {
       console.log(`[API] 💀 KILL TRIGGERED!`);
-      console.log(`[API]    ├─ Reason: ${killReason}`);
-      console.log(`[API]    ├─ Total: ${identity.totalAttempts}/${config.maxAttempts}`);
-      console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
-      console.log(`[API]    ├─ After regenerate: ${identity.attemptsAfterRegenerate}`);
-      console.log(`[API]    └─ Action: 💀 PERMANENT DESTRUCTION`);
+      console.log(`[API]    └─ Reason: ${killReason}`);
       
       await killIdentity(identityId);
       
@@ -250,17 +207,8 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ========================================
-    // 🎭 DECISÃO 2: LIE (defesa híbrida)
-    // Condição: 1ª tentativa após regeneração
-    // ========================================
     if (identity.regenerationCount > 0 && identity.attemptsAfterRegenerate === 1) {
       console.log(`[API] 🎭 LIE TRIGGERED!`);
-      console.log(`[API]    ├─ Reason: 1st attempt after regeneration`);
-      console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
-      console.log(`[API]    ├─ After regenerate: ${identity.attemptsAfterRegenerate}/2`);
-      console.log(`[API]    ├─ Action: 🎭 DECEIVING ATTACKER`);
-      console.log(`[API]    └─ Warning: Next failure = KILL`);
       
       return res.status(401).json({
         success: false,
@@ -283,39 +231,25 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ========================================
-    // 🔄 DECISÃO 3: REGENERATE
-    // ========================================
     if (identity.attempts >= config.regenerateThreshold) {
       console.log(`[API] 🔄 REGENERATE TRIGGERED!`);
-      console.log(`[API]    ├─ Reason: Threshold reached`);
-      console.log(`[API]    ├─ Attempts: ${identity.attempts}/${config.regenerateThreshold}`);
-      console.log(`[API]    ├─ Total: ${identity.totalAttempts}/${config.maxAttempts}`);
-      console.log(`[API]    └─ Action: 🔄 CREATING NEW IDENTITY`);
       
       await killIdentity(identityId);
       
       const newIdentityResult = await createIdentity(identity.paranoiaLevel);
       
       if (!newIdentityResult) {
-        console.log(`[API] ❌ Failed to create new identity`);
         return res.status(500).json({
           success: false,
           error: 'Failed to regenerate identity'
         });
       }
 
-      // Transfere contadores
       const newIdentity = newIdentityResult.identity;
       newIdentity.totalAttempts = identity.totalAttempts;
       newIdentity.regenerationCount = (identity.regenerationCount || 0) + 1;
-      newIdentity.attemptsAfterRegenerate = 0; // 🔥 RESETA
+      newIdentity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${newIdentity.id}`, newIdentity);
-
-      console.log(`[API] ✅ New identity created: ${newIdentity.id}`);
-      console.log(`[API]    ├─ Total preserved: ${newIdentity.totalAttempts}`);
-      console.log(`[API]    ├─ Regenerations: ${newIdentity.regenerationCount}`);
-      console.log(`[API]    └─ Next layers: LIE → KILL`);
 
       return res.json({
         success: true,
@@ -339,15 +273,7 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ========================================
-    // ⚠️ DECISÃO 4: ALLOW (registra tentativa)
-    // ========================================
     const remaining = config.maxAttempts - identity.totalAttempts;
-    
-    console.log(`[API] ⚠️ ALLOW - Failed attempt logged`);
-    console.log(`[API]    ├─ Attempts: ${identity.attempts}`);
-    console.log(`[API]    ├─ Total: ${identity.totalAttempts}/${config.maxAttempts}`);
-    console.log(`[API]    └─ Remaining: ${remaining}`);
     
     return res.status(401).json({
       success: false,
@@ -370,8 +296,82 @@ router.post('/check', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /identity/heartbeat
+ */
+router.post('/heartbeat', async (req: Request, res: Response) => {
+  try {
+    const { identityId, privateKey } = req.body;
+
+    if (!identityId || !privateKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'identityId and privateKey are required'
+      });
+    }
+
+    console.log(`[API] 💓 Heartbeat request for: ${identityId}`);
+
+    const identity = await db.getIdentity(identityId);
+
+    if (!identity || !identity.isAlive) {
+      return res.status(404).json({
+        success: false,
+        error: 'Identity not found or already destroyed'
+      });
+    }
+
+    const validatedIdentity = await validateIdentity(identityId, privateKey);
+
+    if (!validatedIdentity) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid private key'
+      });
+    }
+
+    if (identity.paranoiaLevel !== 'deadman') {
+      return res.status(400).json({
+        success: false,
+        error: 'Heartbeat only available for DEADMAN level identities'
+      });
+    }
+
+    const updated = await updateHeartbeat(identityId);
+
+    if (!updated) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update heartbeat'
+      });
+    }
+
+    const config = paranoiaConfig.deadman;
+    const now = Date.now();
+    const nextDeadline = now + ((config.deadmanTimer || 60) * 1000);
+
+    res.json({
+      success: true,
+      message: '💓 Heartbeat updated',
+      identity: {
+        id: identity.id,
+        paranoiaLevel: identity.paranoiaLevel,
+        lastHeartbeat: now,
+        nextDeadline: nextDeadline,
+        remainingSeconds: config.deadmanTimer
+      }
+    });
+
+  } catch (error) {
+    console.error('[API] Error in /heartbeat:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
  * POST /identity/regenerate
- * REGENERA MANUALMENTE
  */
 router.post('/regenerate', async (req: Request, res: Response) => {
   try {
@@ -420,7 +420,6 @@ router.post('/regenerate', async (req: Request, res: Response) => {
 
 /**
  * POST /identity/kill
- * PANIC BUTTON
  */
 router.post('/kill', async (req: Request, res: Response) => {
   try {
@@ -467,7 +466,6 @@ router.post('/kill', async (req: Request, res: Response) => {
 
 /**
  * GET /identity/status/:id
- * Verifica status sem autenticação
  */
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
