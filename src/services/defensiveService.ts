@@ -15,21 +15,44 @@ export interface DefensiveResponse {
 }
 
 /**
- * 🔒 LOCK REDIS - Previne race conditions em ataques paralelos
- * Usa Redis SETNX (Set if Not Exists) para garantir atomicidade
+ * 🔒 LOCK REDIS ATÔMICO - Previne race conditions em ataques paralelos
+ * Usa timestamp único + TTL para garantir exclusividade
+ * 
+ * Como funciona:
+ * 1. Tenta criar chave com timestamp único (só cria se não existir)
+ * 2. Se criar = lock adquirido
+ * 3. Se já existe = outra thread tem o lock
  */
 async function acquireLock(identityId: string, timeoutMs: number = 5000): Promise<boolean> {
   const lockKey = `lock:${identityId}`;
-  const lockValue = Date.now().toString();
+  const lockValue = `${Date.now()}-${Math.random()}`;
+  const ttlSeconds = Math.ceil(timeoutMs / 1000);
   
   try {
-    // 🔥 CORRIGIDO: Usar API correta do Upstash Redis
-    const result = await db.set(lockKey, lockValue, timeoutMs);
+    // 🔥 Tentar setar lock - só funciona se não existir
+    const existing = await db.get(lockKey);
     
-    // Se conseguiu setar, adquiriu o lock
-    return result !== null;
+    if (existing) {
+      console.log(`[LOCK] ❌ Lock already held for ${identityId}`);
+      return false;
+    }
+    
+    // Lock disponível - adquirir
+    await db.set(lockKey, lockValue, ttlSeconds * 1000);
+    
+    // Double-check: verificar se realmente adquirimos (previne race de milissegundos)
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const current = await db.get(lockKey);
+    
+    if (current === lockValue) {
+      console.log(`[LOCK] ✅ Lock acquired for ${identityId}`);
+      return true;
+    }
+    
+    console.log(`[LOCK] ❌ Lost race condition for ${identityId}`);
+    return false;
   } catch (error) {
-    console.error('[LOCK] Error acquiring lock:', error);
+    console.error('[LOCK] ⚠️ Error acquiring lock:', error);
     return false;
   }
 }
@@ -37,7 +60,6 @@ async function acquireLock(identityId: string, timeoutMs: number = 5000): Promis
 async function releaseLock(identityId: string): Promise<void> {
   const lockKey = `lock:${identityId}`;
   try {
-    // 🔥 CORRIGIDO: Usar delete ao invés de del
     await db.delete(lockKey);
   } catch (error) {
     console.error('[LOCK] Error releasing lock:', error);
@@ -67,8 +89,26 @@ export async function defensiveResponse(
   
   if (!lockAcquired) {
     console.log(`[DEFENSE] ⚠️ Lock timeout - concurrent access detected for ${identity.id}`);
-    // Em caso de race condition, assume postura defensiva
-    await killIdentity(identity.id);
+    
+    // 🔥 RACE CONDITION DETECTADA - Incrementar contador de race
+    const freshIdentity = await db.getIdentity(identity.id);
+    if (freshIdentity && freshIdentity.isAlive) {
+      freshIdentity.attempts = (freshIdentity.attempts || 0) + 3; // Penalidade pesada
+      freshIdentity.totalAttempts = (freshIdentity.totalAttempts || 0) + 3;
+      await db.setIdentity(freshIdentity.id, freshIdentity);
+      
+      // Se exceder threshold, matar imediatamente
+      const config = paranoiaConfig[freshIdentity.paranoiaLevel];
+      if (freshIdentity.totalAttempts >= config.maxAttempts) {
+        await killIdentity(identity.id);
+        return {
+          action: DefensiveAction.KILL,
+          reason: 'Race condition attack detected - concurrent access blocked and killed',
+          identity: null
+        };
+      }
+    }
+    
     return {
       action: DefensiveAction.KILL,
       reason: 'Race condition detected - concurrent access blocked',

@@ -42,7 +42,7 @@ router.post('/new', async (req: Request, res: Response) => {
 
 /**
  * POST /identity/check
- * 🔥 CORRIGIDO: Sempre retorna 'action' + contadores corretos
+ * 🔥 CORRIGIDO: Sempre retorna 'action' + contadores corretos + usa totalAttempts para KILL
  */
 router.post('/check', async (req: Request, res: Response) => {
   try {
@@ -205,9 +205,10 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // 🔥 INCREMENTO ATÔMICO DOS CONTADORES
+    // 🔥 INCREMENTO ATÔMICO DOS CONTADORES + TIMESTAMP
     identity.attempts = (identity.attempts || 0) + 1;
     identity.totalAttempts = (identity.totalAttempts || 0) + 1;
+    identity.lastAttemptAt = Date.now();
 
     if (identity.regenerationCount > 0) {
       identity.attemptsAfterRegenerate = (identity.attemptsAfterRegenerate || 0) + 1;
@@ -222,7 +223,7 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
-    // 🔥 LÓGICA DE KILL
+    // 🔥 LÓGICA DE KILL - CORRIGIDA PARA ATACANTE PERSISTENTE
     let shouldKill = false;
     let killReason = '';
 
@@ -231,9 +232,10 @@ router.post('/check', async (req: Request, res: Response) => {
       shouldKill = identity.attemptsAfterRegenerate >= 2;
       killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
     } else {
-      // Antes de regeneração: mata quando atinge maxAttempts
-      shouldKill = identity.attempts >= config.maxAttempts;
-      killReason = `Maximum attempts exceeded (${identity.attempts}/${config.maxAttempts})`;
+      // 🔥 CRÍTICO: Usar totalAttempts para bloquear atacante persistente
+      // Atacante que faz 3+ tentativas (mesmo com UUIDs diferentes) é MORTO
+      shouldKill = identity.totalAttempts >= config.maxAttempts;
+      killReason = `Maximum total attempts exceeded (${identity.totalAttempts}/${config.maxAttempts})`;
     }
 
     if (shouldKill) {
