@@ -32,7 +32,7 @@
     "killThreshold": 1,
     "ttlSeconds": 300,
     "fakeFingerprintEnabled": true,
-    "deadmanTimer": 15,
-    "description": "Modo deadman - Requer confirmação a cada 15s (TESTING MODE) ou auto-destrói"
+    "deadmanTimer": 10,
+    "description": "Modo deadman - Requer confirmação a cada 10s ou auto-destrói (PRODUCTION: aumentar para 60s)"
   }
 }

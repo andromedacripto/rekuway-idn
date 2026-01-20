@@ -42,6 +42,7 @@ router.post('/new', async (req: Request, res: Response) => {
 
 /**
  * POST /identity/check
+ * 🔥 CORRIGIDO: Sempre retorna 'action' + contadores corretos
  */
 router.post('/check', async (req: Request, res: Response) => {
   try {
@@ -65,6 +66,7 @@ router.post('/check', async (req: Request, res: Response) => {
       console.log(`[API] ❌ Identity not found or dead`);
       return res.status(404).json({
         success: false,
+        action: 'KILLED',
         error: 'Invalid identity or private key'
       });
     }
@@ -84,11 +86,12 @@ router.post('/check', async (req: Request, res: Response) => {
       if (timeSinceHeartbeat > deadmanTimerMs) {
         console.log(`[API] 💀 DEADMAN TIMER EXPIRED!`);
         console.log(`[API]    └─ Killing identity automatically...`);
-        
+
         await killIdentity(identityId);
 
         return res.status(403).json({
           success: false,
+          action: 'KILLED',
           error: 'Identity not found or already destroyed',
           reason: 'Deadman timer expired',
           timeSinceHeartbeat: Math.floor(timeSinceHeartbeat / 1000)
@@ -97,7 +100,8 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     const config = paranoiaConfig[identity.paranoiaLevel];
-    
+
+    // 🔥 Inicializar contadores se não existirem
     if (typeof identity.totalAttempts === 'undefined') {
       identity.totalAttempts = identity.attempts;
     }
@@ -128,6 +132,7 @@ router.post('/check', async (req: Request, res: Response) => {
         console.log(`[API] 💓 Heartbeat auto-updated`);
       }
 
+      // 🔥 Reset contadores em sucesso
       identity.attempts = 0;
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
@@ -186,23 +191,29 @@ router.post('/check', async (req: Request, res: Response) => {
       }
     }
 
+    // 🔥 VALIDAÇÃO FALHOU - Incrementar contadores ATOMICAMENTE
     console.log(`[API] ❌ Validation FAILED - Invalid private key`);
 
+    // Recarregar identidade do Redis para garantir estado atual
     identity = await db.getIdentity(identityId);
 
     if (!identity) {
       return res.status(404).json({
         success: false,
+        action: 'KILLED',
         error: 'Invalid identity or private key'
       });
     }
 
+    // 🔥 INCREMENTO ATÔMICO DOS CONTADORES
+    identity.attempts = (identity.attempts || 0) + 1;
     identity.totalAttempts = (identity.totalAttempts || 0) + 1;
-    
+
     if (identity.regenerationCount > 0) {
       identity.attemptsAfterRegenerate = (identity.attemptsAfterRegenerate || 0) + 1;
     }
-    
+
+    // Salvar estado atualizado
     await db.set(`identity:${identityId}`, identity);
 
     console.log(`[API] 📈 Updated AFTER failed validation:`);
@@ -211,29 +222,33 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
+    // 🔥 LÓGICA DE KILL
     let shouldKill = false;
     let killReason = '';
 
     if (identity.regenerationCount > 0) {
+      // Após regeneração: mata na 2ª tentativa falha
       shouldKill = identity.attemptsAfterRegenerate >= 2;
       killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
     } else {
-      shouldKill = identity.totalAttempts >= config.maxAttempts;
-      killReason = `Maximum total attempts exceeded (${identity.totalAttempts}/${config.maxAttempts})`;
+      // Antes de regeneração: mata quando atinge maxAttempts
+      shouldKill = identity.attempts >= config.maxAttempts;
+      killReason = `Maximum attempts exceeded (${identity.attempts}/${config.maxAttempts})`;
     }
 
     if (shouldKill) {
       console.log(`[API] 💀 KILL TRIGGERED!`);
       console.log(`[API]    └─ Reason: ${killReason}`);
-      
+
       await killIdentity(identityId);
-      
+
       return res.status(403).json({
         success: false,
         action: 'KILLED',
         reason: killReason,
         message: '💀 Identity permanently destroyed',
         details: {
+          attempts: identity.attempts,
           totalAttempts: identity.totalAttempts,
           maxAttempts: config.maxAttempts,
           regenerations: identity.regenerationCount,
@@ -242,9 +257,10 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
+    // 🔥 LÓGICA DE LIE
     if (identity.regenerationCount > 0 && identity.attemptsAfterRegenerate === 1) {
       console.log(`[API] 🎭 LIE TRIGGERED!`);
-      
+
       return res.status(401).json({
         success: false,
         action: 'LIE',
@@ -266,16 +282,18 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    if (identity.attempts >= config.regenerateThreshold) {
+    // 🔥 LÓGICA DE REGENERATE
+    if (identity.attempts >= config.regenerateThreshold && identity.regenerationCount === 0) {
       console.log(`[API] 🔄 REGENERATE TRIGGERED!`);
-      
+
       await killIdentity(identityId);
-      
+
       const newIdentityResult = await createIdentity(identity.paranoiaLevel);
-      
+
       if (!newIdentityResult) {
         return res.status(500).json({
           success: false,
+          action: 'ERROR',
           error: 'Failed to regenerate identity'
         });
       }
@@ -308,8 +326,9 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    const remaining = config.maxAttempts - identity.totalAttempts;
-    
+    // 🔥 ALLOW (tentativa registrada)
+    const remaining = config.maxAttempts - identity.attempts;
+
     return res.status(401).json({
       success: false,
       action: 'ALLOWED',
@@ -325,6 +344,7 @@ router.post('/check', async (req: Request, res: Response) => {
     console.error('[API] ❌ Error:', error);
     res.status(500).json({
       success: false,
+      action: 'ERROR',
       error: 'Failed to check identity'
     });
   }
@@ -525,7 +545,7 @@ router.get('/status/:id', async (req: Request, res: Response) => {
       maxAttempts: config.maxAttempts,
       regenerations: identity.regenerationCount || 0,
       attemptsAfterRegenerate: identity.attemptsAfterRegenerate || 0,
-      remaining: config.maxAttempts - (identity.totalAttempts || identity.attempts)
+      remaining: config.maxAttempts - (identity.attempts || 0)
     });
 
   } catch (error) {

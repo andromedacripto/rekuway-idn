@@ -15,13 +15,43 @@ export interface DefensiveResponse {
 }
 
 /**
+ * 🔒 LOCK REDIS - Previne race conditions em ataques paralelos
+ * Usa Redis SETNX (Set if Not Exists) para garantir atomicidade
+ */
+async function acquireLock(identityId: string, timeoutMs: number = 5000): Promise<boolean> {
+  const lockKey = `lock:${identityId}`;
+  const lockValue = Date.now().toString();
+  
+  try {
+    // 🔥 CORRIGIDO: Usar API correta do Upstash Redis
+    const result = await db.set(lockKey, lockValue, timeoutMs);
+    
+    // Se conseguiu setar, adquiriu o lock
+    return result !== null;
+  } catch (error) {
+    console.error('[LOCK] Error acquiring lock:', error);
+    return false;
+  }
+}
+
+async function releaseLock(identityId: string): Promise<void> {
+  const lockKey = `lock:${identityId}`;
+  try {
+    // 🔥 CORRIGIDO: Usar delete ao invés de del
+    await db.delete(lockKey);
+  } catch (error) {
+    console.error('[LOCK] Error releasing lock:', error);
+  }
+}
+
+/**
  * FUNÇÃO PRINCIPAL: Analisa evento e decide ação defensiva
- * 
+ *
  * Esta é a inteligência do sistema. Ela:
  * 1. Detecta o tipo de ameaça
  * 2. Consulta as configurações de paranoia
  * 3. Decide se: permite, mente, regenera ou mata
- * 
+ *
  * @param identity - Identidade sendo analisada
  * @param event - Tipo de evento detectado
  * @param clientIP - IP do cliente
@@ -32,37 +62,59 @@ export async function defensiveResponse(
   event: ThreatEvent,
   clientIP: string
 ): Promise<DefensiveResponse> {
+  // 🔒 CRÍTICO: Adquirir lock para prevenir race conditions
+  const lockAcquired = await acquireLock(identity.id, 5000);
+  
+  if (!lockAcquired) {
+    console.log(`[DEFENSE] ⚠️ Lock timeout - concurrent access detected for ${identity.id}`);
+    // Em caso de race condition, assume postura defensiva
+    await killIdentity(identity.id);
+    return {
+      action: DefensiveAction.KILL,
+      reason: 'Race condition detected - concurrent access blocked',
+      identity: null
+    };
+  }
+
   try {
-    // Pega configurações do nível de paranoia
-    const config = paranoiaConfig[identity.paranoiaLevel];
-
-    // ❌ REMOVIDO: identity.attempts++; 
-    // O incremento já foi feito no identityService quando a validação falhou
-
-    // Adiciona IP suspeito se não estiver na lista
-    if (!identity.suspiciousIPs.includes(clientIP)) {
-      identity.suspiciousIPs.push(clientIP);
-      await db.setIdentity(identity.id, identity);
-    }
-
-    console.log(`[DEFENSE] Event: ${event} | Identity: ${identity.id} | Attempts: ${identity.attempts}/${config.maxAttempts}`);
-
-    // DECISÃO 1: KILL (prioridade máxima)
-    // Mata após 3 tentativas erradas (maxAttempts)
-    if (identity.attempts >= config.maxAttempts) {
-      await killIdentity(identity.id);
-      
+    // Recarrega identidade do Redis para garantir estado atual
+    const freshIdentity = await db.getIdentity(identity.id);
+    
+    if (!freshIdentity || !freshIdentity.isAlive) {
       return {
         action: DefensiveAction.KILL,
-        reason: `Too many failed attempts (${identity.attempts}/${config.maxAttempts})`,
+        reason: 'Identity no longer exists or already killed',
+        identity: null
+      };
+    }
+
+    // Pega configurações do nível de paranoia
+    const config = paranoiaConfig[freshIdentity.paranoiaLevel];
+
+    // Adiciona IP suspeito se não estiver na lista
+    if (!freshIdentity.suspiciousIPs.includes(clientIP)) {
+      freshIdentity.suspiciousIPs.push(clientIP);
+      await db.setIdentity(freshIdentity.id, freshIdentity);
+    }
+
+    console.log(`[DEFENSE] Event: ${event} | Identity: ${freshIdentity.id} | Attempts: ${freshIdentity.attempts}/${config.maxAttempts}`);
+
+    // DECISÃO 1: KILL (prioridade máxima)
+    // Mata após maxAttempts tentativas erradas
+    if (freshIdentity.attempts >= config.maxAttempts) {
+      await killIdentity(freshIdentity.id);
+
+      return {
+        action: DefensiveAction.KILL,
+        reason: `Too many failed attempts (${freshIdentity.attempts}/${config.maxAttempts})`,
         identity: null
       };
     }
 
     // DECISÃO 2: REGENERATE
-    if (config.regenerateThreshold && identity.attempts >= config.regenerateThreshold) {
-      const newIdentity = await regenerateIdentity(identity.id);
-      
+    if (config.regenerateThreshold && freshIdentity.attempts >= config.regenerateThreshold) {
+      const newIdentity = await regenerateIdentity(freshIdentity.id);
+
       return {
         action: DefensiveAction.REGENERATE,
         reason: `Identity regenerated: exceeded ${config.regenerateThreshold} suspicious attempts`,
@@ -76,8 +128,8 @@ export async function defensiveResponse(
       return {
         action: DefensiveAction.LIE,
         reason: 'Fingerprint match detected: returning fake metadata',
-        identity: identity,
-        fakeData: identity.fakeMetadata
+        identity: freshIdentity,
+        fakeData: freshIdentity.fakeMetadata
       };
     }
 
@@ -85,26 +137,29 @@ export async function defensiveResponse(
     return {
       action: DefensiveAction.ALLOW,
       reason: 'Event logged but within acceptable threshold',
-      identity: identity
+      identity: freshIdentity
     };
 
   } catch (error) {
     console.error('[DEFENSE] Error in defensive response:', error);
-    
+
     // Em caso de erro, assume postura defensiva
     await killIdentity(identity.id);
-    
+
     return {
       action: DefensiveAction.KILL,
       reason: 'Identity killed due to system error (fail-safe)',
       identity: null
     };
+  } finally {
+    // 🔒 SEMPRE liberar lock
+    await releaseLock(identity.id);
   }
 }
 
 /**
  * Detecta tipo de evento baseado em padrões
- * 
+ *
  * @param identity - Identidade sendo verificada
  * @param clientIP - IP do cliente
  * @param timeSinceLastAttempt - Tempo desde última tentativa (ms)
@@ -142,7 +197,7 @@ export function detectThreatEvent(
 /**
  * Verifica deadman switch
  * Se modo deadman e sem heartbeat recente -> mata identidade
- * 
+ *
  * @param identity - Identidade a verificar
  * @returns true se identidade foi morta
  */
@@ -153,11 +208,18 @@ export async function checkDeadmanSwitch(identity: Identity): Promise<boolean> {
 
   const config = paranoiaConfig.deadman;
   const now = Date.now();
-  const timeSinceHeartbeat = now - (identity.lastHeartbeat || identity.createdAt);
-  
+  const lastHeartbeat = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
+  const timeSinceHeartbeat = now - lastHeartbeat;
+  const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
+
+  console.log(`[DEADMAN] Checking identity ${identity.id}:`);
+  console.log(`[DEADMAN]   ├─ Last heartbeat: ${new Date(lastHeartbeat).toISOString()}`);
+  console.log(`[DEADMAN]   ├─ Time since: ${Math.floor(timeSinceHeartbeat / 1000)}s`);
+  console.log(`[DEADMAN]   └─ Timer limit: ${config.deadmanTimer}s`);
+
   // Se passou do tempo sem heartbeat, mata
-  if (config.deadmanTimer && timeSinceHeartbeat > config.deadmanTimer * 1000) {
-    console.log(`[DEADMAN] ⚠️ Timeout exceeded for identity ${identity.id}`);
+  if (timeSinceHeartbeat > deadmanTimerMs) {
+    console.log(`[DEADMAN] ⚠️ Timeout exceeded for identity ${identity.id} - KILLING NOW`);
     await killIdentity(identity.id);
     return true;
   }
@@ -166,23 +228,36 @@ export async function checkDeadmanSwitch(identity: Identity): Promise<boolean> {
 }
 
 /**
- * Background job que verifica deadman switches
- * Roda a cada 10 segundos
+ * 🔥 Background job que verifica deadman switches
+ * Roda a cada 5 segundos para garantir precisão
  */
 export function startDeadmanMonitor() {
+  console.log('[DEADMAN] 🚀 Starting Deadman Monitor...');
+  
   setInterval(async () => {
     try {
       const identities = await db.listIdentities();
-      
+      let checked = 0;
+      let killed = 0;
+
       for (const identity of identities) {
         if (identity.paranoiaLevel === 'deadman' && identity.isAlive) {
-          await checkDeadmanSwitch(identity);
+          checked++;
+          const wasKilled = await checkDeadmanSwitch(identity);
+          if (wasKilled) {
+            killed++;
+            console.log(`[DEADMAN] 💀 Killed identity ${identity.id} due to timeout`);
+          }
         }
+      }
+
+      if (checked > 0) {
+        console.log(`[DEADMAN] Monitor sweep: checked ${checked} identities, killed ${killed}`);
       }
     } catch (error) {
       console.error('[DEADMAN] Monitor error:', error);
     }
-  }, 10000); // 10 segundos
+  }, 5000); // 🔥 5 segundos para garantir precisão
 
-  console.log('[DEADMAN] Monitor started');
+  console.log('[DEADMAN] ✅ Monitor started (checking every 5s)');
 }

@@ -1,26 +1,21 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
 import express from 'express';
 import cors from 'cors';
+import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes';
-import apiKeyRoutes from './routes/apiKeyRoutes';
-import { securityLogger, rateLimitByIP } from './middleware/securityLogger';
-import { startDeadmanMonitor } from './services/heartbeat';
+import { startDeadmanMonitor } from './services/defensiveService';
+
+dotenv.config();
 
 const app = express();
 
+// Middleware
+app.use(cors());
 app.use(express.json());
-app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-  credentials: true
-}));
-app.use(securityLogger);
-app.use(rateLimitByIP);
 
+// Health check
 app.get('/', (req, res) => {
-  res.json({ 
-    success: true, 
+  res.json({
+    success: true,
     message: 'Rekuway IDN API is running ✅',
     version: '1.0.0-MVP',
     features: [
@@ -34,42 +29,24 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok',
-    service: 'Rekuway IDN',
-    version: '1.0.0-MVP',
+    status: 'healthy',
     timestamp: new Date().toISOString(),
-    redis: process.env.UPSTASH_REDIS_REST_URL ? 'connected' : 'not configured',
-    deadmanMonitor: 'active'
+    uptime: process.uptime()
   });
 });
 
+// Routes
 app.use('/identity', identityRoutes);
-app.use('/api-keys', apiKeyRoutes);
 
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Endpoint not found',
-    path: req.path
-  });
-});
-
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('[ERROR]', err);
-  res.status(500).json({
-    success: false,
-    error: 'Internal server error'
-  });
-});
-
-console.log('[SERVER] 🚀 Starting...');
+// 🔥 CRÍTICO: Iniciar Deadman Monitor ao iniciar servidor
 startDeadmanMonitor();
 
+// Start server (only if not in Vercel)
 if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
-    console.log(`[SERVER] 🚀 Running on port ${PORT}`);
-    console.log(`[SERVER] 💓 Deadman monitor active`);
+    console.log(`🔐 Rekuway IDN API running on port ${PORT}`);
+    console.log(`💓 Deadman Monitor active`);
   });
 }
 
