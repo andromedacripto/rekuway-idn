@@ -135,3 +135,7 @@ export async function verifyIdentity(req: Request, res: Response) {
     return res.status(500).json({ success: false, error: 'Internal server error' });
   }
 }
+import { Router } from 'express';
+const router = Router();
+router.post('/', verifyIdentity);
+export default router;

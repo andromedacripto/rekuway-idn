@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes';
-import { verifyIdentity } from './routes/verify-identity';
+import verifyIdentityRouter from './routes/verify-identity';
 import { startDeadmanMonitor } from './services/defensiveService';
 
 dotenv.config();
@@ -41,7 +41,7 @@ app.get('/health', (req, res) => {
 app.use('/identity', identityRoutes);
 
 // Nova rota de verificação pós-autenticação
-app.post('/api/verify-identity', verifyIdentity);
+app.use('/api/verify-identity', verifyIdentityRouter);
 
 // 🔥 CRÍTICO: Iniciar Deadman Monitor ao iniciar servidor
 startDeadmanMonitor();
