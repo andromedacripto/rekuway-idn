@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes';
 import verifyIdentityRouter from './routes/verify-identity';
+import apiKeyRoutes from './routes/apiKeyRoutes';
 import { requireApiKey } from './middleware/auth';
 import { startDeadmanMonitor } from './services/defensiveService';
 
@@ -39,6 +40,7 @@ app.get('/health', (req, res) => {
 });
 
 // Routes
+app.use('/api-keys', apiKeyRoutes);
 app.use('/identity', identityRoutes);
 
 // Nova rota de verificação pós-autenticação
