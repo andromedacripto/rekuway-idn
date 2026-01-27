@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes';
+import { verifyIdentity } from './routes/verify-identity';
 import { startDeadmanMonitor } from './services/defensiveService';
 
 dotenv.config();
@@ -22,7 +23,8 @@ app.get('/', (req, res) => {
       'Hybrid Defense (ALLOW → REGENERATE → LIE → KILL)',
       'Deadman Switch with Heartbeat Monitor 💓',
       '4 Paranoia Levels',
-      'Fake Metadata Deception'
+      'Fake Metadata Deception',
+      'Post-Auth Identity Verification'
     ]
   });
 });
@@ -37,6 +39,9 @@ app.get('/health', (req, res) => {
 
 // Routes
 app.use('/identity', identityRoutes);
+
+// Nova rota de verificação pós-autenticação
+app.post('/api/verify-identity', verifyIdentity);
 
 // 🔥 CRÍTICO: Iniciar Deadman Monitor ao iniciar servidor
 startDeadmanMonitor();
