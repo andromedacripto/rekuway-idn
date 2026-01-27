@@ -4,6 +4,7 @@ import { defensiveResponse, detectThreatEvent } from '../services/defensiveServi
 import { updateHeartbeat } from '../services/heartbeat';
 import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
+import { requireApiKey, checkIdentityCreationLimit } from '../middleware/auth';
 import paranoiaConfig from '../config/paranoia.json';
 
 const router = Router();
@@ -11,7 +12,10 @@ const router = Router();
 /**
  * POST /identity/new
  */
-router.post('/new', async (req: Request, res: Response) => {
+router.post('/new',
+  requireApiKey,
+  checkIdentityCreationLimit,
+  async (req: Request, res: Response) => {
   try {
     const { paranoiaLevel = 'medium' } = req.body;
 
