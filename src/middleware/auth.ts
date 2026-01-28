@@ -13,7 +13,7 @@ declare global {
 
 /**
  * Middleware que valida API key em todos os endpoints protegidos
- * 
+ *
  * Header esperado: Authorization: Bearer rkwy_live_xxxxx
  * Ou query param: ?apiKey=rkwy_live_xxxxx
  */
@@ -22,15 +22,15 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
     // Pega API key do header ou query
     const authHeader = req.headers.authorization;
     const queryApiKey = req.query.apiKey as string;
-    
+
     let apiKeyString: string | null = null;
-    
+
     if (authHeader && authHeader.startsWith('Bearer ')) {
       apiKeyString = authHeader.substring(7);
     } else if (queryApiKey) {
       apiKeyString = queryApiKey;
     }
-    
+
     if (!apiKeyString) {
       return res.status(401).json({
         success: false,
@@ -39,15 +39,14 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
         docs: 'https://rekuway.com/docs/authentication'
       });
     }
-    
+
     // Valida API key
     const apiKey = await validateApiKey(apiKeyString);
-    
+
     if (!apiKey) {
-      // Incrementa bloqueados se a key parece válida mas falhou
+      // 🔥 MUDANÇA: Passa a apiKeyString diretamente (não o hash)
       if (apiKeyString && apiKeyString.startsWith('rkwy_live_')) {
-        const hashedKey = crypto.createHash('sha256').update(apiKeyString).digest('hex');
-        await incrementBlockedRequests(hashedKey).catch(() => {});
+        await incrementBlockedRequests(apiKeyString).catch(() => {});
       }
       return res.status(401).json({
         success: false,
@@ -56,10 +55,10 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
         docs: 'https://rekuway.com/docs/authentication'
       });
     }
-    
+
     // Verifica rate limit (não é criação de identidade)
     const rateLimitCheck = await checkRateLimit(apiKey, false);
-    
+
     if (!rateLimitCheck.allowed) {
       return res.status(429).json({
         success: false,
@@ -69,17 +68,17 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
         docs: 'https://rekuway.com/docs/rate-limits'
       });
     }
-    
+
     // Adiciona apiKey ao request pra uso posterior
     req.apiKey = apiKey;
-    
+
     // Adiciona headers de rate limit na resposta
     res.setHeader('X-RateLimit-Limit', apiKey.rateLimit.requestsPerMinute.toString());
     res.setHeader('X-RateLimit-Remaining', rateLimitCheck.limits.requestsPerMinute.toString());
     res.setHeader('X-RateLimit-Reset', new Date(apiKey.usage.lastRequest + 60000).toISOString());
-    
+
     next();
-    
+
   } catch (error) {
     console.error('[AUTH] Error validating API key:', error);
     res.status(500).json({
@@ -97,17 +96,17 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
 export async function checkIdentityCreationLimit(req: Request, res: Response, next: NextFunction) {
   try {
     const apiKey = req.apiKey;
-    
+
     if (!apiKey) {
       return res.status(401).json({
         success: false,
         error: 'API key required'
       });
     }
-    
+
     // Verifica se pode criar identidade (checa limite mensal)
     const rateLimitCheck = await checkRateLimit(apiKey, true);
-    
+
     if (!rateLimitCheck.allowed) {
       return res.status(429).json({
         success: false,
@@ -117,14 +116,14 @@ export async function checkIdentityCreationLimit(req: Request, res: Response, ne
         upgrade: 'https://rekuway.com/pricing'
       });
     }
-    
+
     // Adiciona headers de limites
     res.setHeader('X-Identities-Limit', apiKey.rateLimit.identitiesPerMonth.toString());
     res.setHeader('X-Identities-Remaining', rateLimitCheck.limits.identitiesRemaining.toString());
     res.setHeader('X-Identities-Reset', new Date(apiKey.usage.resetDate).toISOString());
-    
+
     next();
-    
+
   } catch (error) {
     console.error('[AUTH] Error checking identity limit:', error);
     res.status(500).json({

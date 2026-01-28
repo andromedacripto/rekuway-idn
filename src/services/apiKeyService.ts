@@ -228,14 +228,38 @@ export async function revokeApiKey(hashedKey: string): Promise<boolean> {
   return true;
 }
 /**
+/**
  * Incrementa requests bloqueados (quando API key é inválida)
  */
-export async function incrementBlockedRequests(hashedKey: string): Promise<void> {
+export async function incrementBlockedRequests(apiKeyString: string): Promise<void> {
   try {
-    const keyData = await db.getApiKey(hashedKey);
-    if (!keyData) return;
+    const hashedKey = crypto.createHash('sha256').update(apiKeyString).digest('hex');
+    let keyData = await db.getApiKey(hashedKey);
     
+    // Se a key não existe, criar um registro temporário só para tracking
+    if (!keyData) {
+      keyData = {
+        key: 'invalid',
+        hashedKey,
+        name: 'Invalid/Blocked Key',
+        userId: 'unknown',
+        tier: 'hobby',
+        rateLimit: { identitiesPerMonth: 0, requestsPerMinute: 0 },
+        usage: {
+          identitiesCreated: 0,
+          requestsThisMinute: 0,
+          lastRequest: Date.now(),
+          resetDate: Date.now() + (30 * 24 * 60 * 60 * 1000),
+          totalRequests: 0,
+          blockedRequests: 0
+        },
+        createdAt: Date.now(),
+        isActive: false
+      };
+    }
+
     keyData.usage.blockedRequests = (keyData.usage.blockedRequests || 0) + 1;
+    keyData.usage.totalRequests = (keyData.usage.totalRequests || 0) + 1;
     await db.setApiKey(hashedKey, keyData);
   } catch (error) {
     console.error('[API_KEY] Error incrementing blocked:', error);
