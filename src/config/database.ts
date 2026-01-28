@@ -213,17 +213,17 @@ class RedisKVStore {
    * API Keys CRUD
    */
   async setApiKey(hashedKey: string, apiKey: any): Promise<void> {
-    const key = `apiKey:${hashedKey}`;
+    const key = `apikey:${hashedKey}`;
     await this.set(key, apiKey);
   }
 
   async getApiKey(hashedKey: string): Promise<any | null> {
-    const key = `apiKey:${hashedKey}`;
+    const key = `apikey:${hashedKey}`;
     return await this.get(key);
   }
 
   async listApiKeys(): Promise<any[]> {
-    const keys = await this.redis.keys('apiKey:*');
+    const keys = await this.redis.keys('apikey:*');
     if (keys.length === 0) return [];
     
     const values = await this.redis.mget(...keys);
@@ -233,7 +233,7 @@ class RedisKVStore {
   }
 
   async deleteApiKey(hashedKey: string): Promise<boolean> {
-    const key = `apiKey:${hashedKey}`;
+    const key = `apikey:${hashedKey}`;
     const result = await this.redis.del(key);
     return result > 0;
   }
