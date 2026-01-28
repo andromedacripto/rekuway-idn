@@ -1,5 +1,6 @@
+import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { validateApiKey, checkRateLimit, ApiKey } from '../services/apiKeyService';
+import { validateApiKey, checkRateLimit, incrementBlockedRequests, ApiKey } from '../services/apiKeyService';
 
 // Extende Request pra incluir apiKey
 declare global {
@@ -43,6 +44,11 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
     const apiKey = await validateApiKey(apiKeyString);
     
     if (!apiKey) {
+      // Incrementa bloqueados se a key parece válida mas falhou
+      if (apiKeyString && apiKeyString.startsWith('rkwy_live_')) {
+        const hashedKey = crypto.createHash('sha256').update(apiKeyString).digest('hex');
+        await incrementBlockedRequests(hashedKey).catch(() => {});
+      }
       return res.status(401).json({
         success: false,
         error: 'Invalid API key',

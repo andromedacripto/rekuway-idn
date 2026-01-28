@@ -23,6 +23,8 @@ export interface ApiKey {
     requestsThisMinute: number;
     lastRequest: number;
     resetDate: number;  // Timestamp do próximo reset mensal
+    totalRequests?: number;
+    blockedRequests?: number;
   };
   
   createdAt: number;
@@ -178,6 +180,7 @@ export async function checkRateLimit(apiKey: ApiKey, isIdentityCreation: boolean
   
   // Incrementa contadores
   apiKey.usage.requestsThisMinute++;
+  apiKey.usage.totalRequests = (apiKey.usage.totalRequests || 0) + 1;
   apiKey.usage.lastRequest = now;
   
   if (isIdentityCreation) {
@@ -223,4 +226,18 @@ export async function revokeApiKey(hashedKey: string): Promise<boolean> {
   
   console.log(`[API_KEY] Revoked: ${keyData.name}`);
   return true;
+}
+/**
+ * Incrementa requests bloqueados (quando API key é inválida)
+ */
+export async function incrementBlockedRequests(hashedKey: string): Promise<void> {
+  try {
+    const keyData = await db.getApiKey(hashedKey);
+    if (!keyData) return;
+    
+    keyData.usage.blockedRequests = (keyData.usage.blockedRequests || 0) + 1;
+    await db.setApiKey(hashedKey, keyData);
+  } catch (error) {
+    console.error('[API_KEY] Error incrementing blocked:', error);
+  }
 }
