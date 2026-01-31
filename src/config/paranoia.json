@@ -1,38 +1,27 @@
 {
   "low": {
-    "maxAttempts": 10,
     "regenerateThreshold": 5,
-    "killThreshold": 10,
-    "ttlSeconds": 86400,
-    "fakeFingerprintEnabled": false,
-    "deadmanTimer": null,
-    "description": "Modo relaxado - Para testes e desenvolvimento"
+    "maxAttempts": 10,
+    "ttl": 86400,
+    "fakeFingerprintEnabled": false
   },
   "medium": {
-    "maxAttempts": 5,
     "regenerateThreshold": 3,
-    "killThreshold": 5,
-    "ttlSeconds": 3600,
-    "fakeFingerprintEnabled": true,
-    "deadmanTimer": null,
-    "description": "Modo balanceado - Uso cotidiano"
+    "maxAttempts": 5,
+    "ttl": 3600,
+    "fakeFingerprintEnabled": true
   },
   "high": {
-    "maxAttempts": 3,
     "regenerateThreshold": 2,
-    "killThreshold": 3,
-    "ttlSeconds": 1800,
-    "fakeFingerprintEnabled": true,
-    "deadmanTimer": null,
-    "description": "Modo paranóico - Alta segurança"
+    "maxAttempts": 3,
+    "ttl": 1800,
+    "fakeFingerprintEnabled": true
   },
   "deadman": {
-    "maxAttempts": 1,
     "regenerateThreshold": 1,
-    "killThreshold": 1,
-    "ttlSeconds": 300,
+    "maxAttempts": 1,
+    "ttl": 300,
     "fakeFingerprintEnabled": true,
-    "deadmanTimer": 30,
-    "description": "Modo deadman - Requer confirmação a cada 30s ou auto-destrói (TESTING: 30s | PRODUCTION: 60s)"
+    "deadmanTimer": 60
   }
 }

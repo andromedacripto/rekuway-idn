@@ -23,7 +23,7 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "axios": "^1.13.2",
+    "axios": "^1.13.4",
     "ts-node": "^10.9.2"
   }
 }

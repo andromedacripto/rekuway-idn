@@ -6,12 +6,12 @@ import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
 import { requireApiKey, checkIdentityCreationLimit } from '../middleware/auth';
 import paranoiaConfig from '../config/paranoia.json';
+import { extractFeatures, trackEndpoint } from '../services/featureExtraction';
+import { analyzeWithAI } from '../services/aiClient';
+import { combineDecisionsV3, DecisionContext } from '../services/decisionEngine';
 
 const router = Router();
 
-/**
- * POST /identity/new
- */
 router.post('/new',
   requireApiKey,
   checkIdentityCreationLimit,
@@ -34,7 +34,6 @@ router.post('/new',
       identity: result.identity,
       privateKey: result.privateKey
     });
-
   } catch (error) {
     console.error('[API] Error creating identity:', error);
     res.status(500).json({
@@ -44,14 +43,11 @@ router.post('/new',
   }
 });
 
-/**
- * POST /identity/check
- * 🔥 CORRIGIDO: Sempre retorna 'action' + contadores corretos + usa totalAttempts para KILL
- */
 router.post('/check', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
     const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+    const userAgent = req.headers['user-agent'] || '';
 
     if (!identityId || !privateKey) {
       return res.status(400).json({
@@ -66,16 +62,26 @@ router.post('/check', async (req: Request, res: Response) => {
 
     let identity = await db.getIdentity(identityId);
 
-    if (!identity || !identity.isAlive) {
-      console.log(`[API] ❌ Identity not found or dead`);
+    // ✅ CORREÇÃO #1: NÃO retorna KILL se identity não existe
+    // Apenas retorna 404 genérico
+    if (!identity) {
+      console.log(`[API] ❌ Identity not found: ${identityId}`);
       return res.status(404).json({
         success: false,
-        action: 'KILLED',
-        error: 'Invalid identity or private key'
+        error: 'Identity not found'
       });
     }
 
-    // 🔥 DEADMAN CHECK - Verificar se expirou ANTES de validar
+    // ✅ CORREÇÃO #2: Verifica se está morta ANTES de processar
+    if (!identity.isAlive) {
+      console.log(`[API] ❌ Identity already dead: ${identityId}`);
+      return res.status(403).json({
+        success: false,
+        action: 'KILLED',
+        error: 'Identity was previously destroyed'
+      });
+    }
+
     if (identity.paranoiaLevel === 'deadman') {
       const config = paranoiaConfig.deadman;
       const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
@@ -89,14 +95,14 @@ router.post('/check', async (req: Request, res: Response) => {
 
       if (timeSinceHeartbeat > deadmanTimerMs) {
         console.log(`[API] 💀 DEADMAN TIMER EXPIRED!`);
-        console.log(`[API]    └─ Killing identity automatically...`);
-
+        
+        // ✅ CORREÇÃO #3: DEADMAN é exceção - pode KILL imediatamente
         await killIdentity(identityId);
 
         return res.status(403).json({
           success: false,
           action: 'KILLED',
-          error: 'Identity not found or already destroyed',
+          error: 'Deadman timer expired - identity destroyed',
           reason: 'Deadman timer expired',
           timeSinceHeartbeat: Math.floor(timeSinceHeartbeat / 1000)
         });
@@ -105,7 +111,6 @@ router.post('/check', async (req: Request, res: Response) => {
 
     const config = paranoiaConfig[identity.paranoiaLevel];
 
-    // 🔥 Inicializar contadores se não existirem
     if (typeof identity.totalAttempts === 'undefined') {
       identity.totalAttempts = identity.attempts;
     }
@@ -123,12 +128,33 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
+    const features = await extractFeatures(identity, clientIP, userAgent);
+    await trackEndpoint(identityId, 'check');
+    const aiAnalysis = await analyzeWithAI(features);
+
+    // ✅ CORREÇÃO #4: validateIdentity SEMPRE retorna objeto ou null
+    // Objeto tem property isValidSignature: boolean
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    if (validatedIdentity) {
-      console.log(`[API] ✅ Validation SUCCESSFUL`);
+    // ✅ CORREÇÃO #5: NÃO retorna KILL se validatedIdentity é null
+    // null significa "identity não encontrada ou expirada" - já tratado antes
+    if (!validatedIdentity) {
+      console.log(`[API] ❌ validateIdentity returned null (identity expired or deleted)`);
+      return res.status(404).json({
+        success: false,
+        error: 'Identity not found or expired'
+      });
+    }
 
-      // 🔥 ATUALIZAR HEARTBEAT SE FOR DEADMAN
+    const isValidSignature = validatedIdentity.isValidSignature;
+    console.log(`[API] 🔑 isValidSignature: ${isValidSignature}`);
+
+    // ========================================
+    // VALIDAÇÃO BEM-SUCEDIDA
+    // ========================================
+    if (isValidSignature === true) {
+      console.log(`[API] ✅ VALIDATION SUCCESSFUL - Valid cryptographic signature`);
+
       if (identity.paranoiaLevel === 'deadman') {
         const now = Date.now();
         identity.lastHeartbeat = now;
@@ -136,80 +162,56 @@ router.post('/check', async (req: Request, res: Response) => {
         console.log(`[API] 💓 Heartbeat auto-updated`);
       }
 
-      // 🔥 Reset contadores em sucesso
       identity.attempts = 0;
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
 
       console.log(`[API] 🔄 Counters reset`);
-
-      const timeSinceLastAttempt = Date.now() - validatedIdentity.lastAttemptAt;
-      const threatEvent = detectThreatEvent(validatedIdentity, clientIP, timeSinceLastAttempt);
-      const defensiveResult = await defensiveResponse(validatedIdentity, threatEvent, clientIP);
-
-      console.log(`[API] 🎯 Action: ${defensiveResult.action}`);
+      console.log(`[API] 🎯 Final Action: ALLOWED (validation successful)`);
       console.log(`[API] ========================================\n`);
 
-      switch (defensiveResult.action) {
-        case DefensiveAction.KILL:
-          return res.status(403).json({
-            success: false,
-            action: 'KILLED',
-            reason: defensiveResult.reason,
-            message: '💀 Identity destroyed'
-          });
-
-        case DefensiveAction.REGENERATE:
-          return res.json({
-            success: true,
-            action: 'REGENERATE',
-            reason: defensiveResult.reason,
-            message: '🔄 Identity regenerated',
-            newIdentity: defensiveResult.newIdentity
-          });
-
-        case DefensiveAction.LIE:
-          return res.json({
-            success: true,
-            action: 'LIE',
-            reason: defensiveResult.reason,
-            message: '🎭 Returning fake metadata',
-            identity: defensiveResult.fakeData
-          });
-
-        case DefensiveAction.ALLOW:
-        default:
-          return res.json({
-            success: true,
-            action: 'ALLOWED',
-            reason: defensiveResult.reason,
-            identity: {
-              id: defensiveResult.identity!.id,
-              publicKey: defensiveResult.identity!.publicKey,
-              paranoiaLevel: defensiveResult.identity!.paranoiaLevel,
-              expiresAt: defensiveResult.identity!.expiresAt,
-              attempts: defensiveResult.identity!.attempts,
-              totalAttempts: defensiveResult.identity!.totalAttempts || 0
-            }
-          });
-      }
-    }
-
-    // 🔥 VALIDAÇÃO FALHOU - Incrementar contadores ATOMICAMENTE
-    console.log(`[API] ❌ Validation FAILED - Invalid private key`);
-
-    // Recarregar identidade do Redis para garantir estado atual
-    identity = await db.getIdentity(identityId);
-
-    if (!identity) {
-      return res.status(404).json({
-        success: false,
-        action: 'KILLED',
-        error: 'Invalid identity or private key'
+      return res.json({
+        success: true,
+        action: 'ALLOWED',
+        reason: 'Valid cryptographic signature',
+        identity: {
+          id: validatedIdentity.id,
+          publicKey: validatedIdentity.publicKey,
+          paranoiaLevel: validatedIdentity.paranoiaLevel,
+          expiresAt: validatedIdentity.expiresAt,
+          attempts: 0,
+          totalAttempts: validatedIdentity.totalAttempts || 0,
+          regenerationCount: validatedIdentity.regenerationCount || 0
+        },
+        aiAnalysis: aiAnalysis ? {
+          threatScore: aiAnalysis.riskAnalysis.threatScore,
+          confidence: aiAnalysis.riskAnalysis.confidence,
+          topFactors: aiAnalysis.riskAnalysis.topFactors,
+          pattern: aiAnalysis.threatPattern.pattern,
+          aiWasIgnored: true
+        } : null
       });
     }
 
-    // 🔥 INCREMENTO ATÔMICO DOS CONTADORES + TIMESTAMP
+    // ========================================
+    // VALIDAÇÃO FALHOU
+    // ========================================
+    console.log(`[API] ❌ VALIDATION FAILED - Invalid private key`);
+
+    // ✅ CORREÇÃO #6: Reload identity do Redis para garantir estado atual
+    identity = await db.getIdentity(identityId);
+
+    // ✅ CORREÇÃO #7: Se identity sumiu durante processamento, retorna 404
+    // NÃO retorna KILL pois não foi o motor de decisão que matou
+    if (!identity) {
+      console.log(`[API] ⚠️ Identity disappeared during processing`);
+      return res.status(404).json({
+        success: false,
+        error: 'Identity not found'
+      });
+    }
+
+    // ✅ CORREÇÃO #8: Incrementa contadores ANTES de decisão
     identity.attempts = (identity.attempts || 0) + 1;
     identity.totalAttempts = (identity.totalAttempts || 0) + 1;
     identity.lastAttemptAt = Date.now();
@@ -218,7 +220,6 @@ router.post('/check', async (req: Request, res: Response) => {
       identity.attemptsAfterRegenerate = (identity.attemptsAfterRegenerate || 0) + 1;
     }
 
-    // Salvar estado atualizado
     await db.set(`identity:${identityId}`, identity);
 
     console.log(`[API] 📈 Updated AFTER failed validation:`);
@@ -227,31 +228,80 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
-    // 🔥 LÓGICA DE KILL - CORRIGIDA PARA ATACANTE PERSISTENTE
-    let shouldKill = false;
+    // ========================================
+    // DECISÃO BASEADA EM REGRAS
+    // ========================================
+    let ruleBasedAction: DefensiveAction = DefensiveAction.ALLOW;
     let killReason = '';
 
+    // 🔥 LÓGICA DE KILL - Após regeneração
     if (identity.regenerationCount > 0) {
-      // Após regeneração: mata na 2ª tentativa falha
-      shouldKill = identity.attemptsAfterRegenerate >= 2;
-      killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
-    } else {
-      // 🔥 CRÍTICO: Usar totalAttempts para bloquear atacante persistente
-      // Atacante que faz 3+ tentativas (mesmo com UUIDs diferentes) é MORTO
-      shouldKill = identity.totalAttempts >= config.maxAttempts;
-      killReason = `Maximum total attempts exceeded (${identity.totalAttempts}/${config.maxAttempts})`;
+      if (identity.attemptsAfterRegenerate >= 2) {
+        ruleBasedAction = DefensiveAction.KILL;
+        killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
+      }
     }
 
-    if (shouldKill) {
-      console.log(`[API] 💀 KILL TRIGGERED!`);
-      console.log(`[API]    └─ Reason: ${killReason}`);
+    // 🔥 LÓGICA DE LIE - 1ª tentativa após regeneração
+    if (ruleBasedAction === DefensiveAction.ALLOW && 
+        identity.regenerationCount > 0 && 
+        identity.attemptsAfterRegenerate === 1) {
+      ruleBasedAction = DefensiveAction.LIE;
+    }
 
+    // 🔥 LÓGICA DE REGENERATE - Usa > ao invés de >=
+    if (ruleBasedAction === DefensiveAction.ALLOW && 
+        identity.regenerationCount === 0 &&
+        identity.attempts > config.regenerateThreshold) {
+      ruleBasedAction = DefensiveAction.REGENERATE;
+      console.log(`[API] 🔄 REGENERATE condition met:`);
+      console.log(`[API]    ├─ attempts (${identity.attempts}) > threshold (${config.regenerateThreshold})`);
+      console.log(`[API]    └─ regenerationCount: ${identity.regenerationCount}`);
+    }
+
+    // ========================================
+    // COMBINA DECISÃO COM IA
+    // ========================================
+    const decisionContext: DecisionContext = {
+      ruleBasedAction,
+      aiRecommendation: aiAnalysis?.riskAnalysis.recommendedAction || null,
+      validationSuccessful: false,
+      threatScore: aiAnalysis?.riskAnalysis.threatScore || 0,
+      confidence: aiAnalysis?.riskAnalysis.confidence || 'low',
+      topFactors: aiAnalysis?.riskAnalysis.topFactors || [],
+      identityId
+    };
+
+    const decisionResult = await combineDecisionsV3(decisionContext);
+    const finalAction = decisionResult.action;
+
+    console.log(`[API] 🎯 Rule-Based: ${ruleBasedAction}`);
+    console.log(`[API] 🤖 AI Recommended: ${aiAnalysis?.riskAnalysis.recommendedAction || 'N/A'}`);
+    console.log(`[API] ✅ Final Action: ${finalAction} (${decisionResult.aiContribution})`);
+    console.log(`[API] 💯 Confidence: ${decisionResult.confidence.toFixed(2)}`);
+
+    if (decisionResult.aiDisagreement) {
+      console.log(`[API] ⚠️  AI DISAGREEMENT DETECTED:`);
+      console.log(`[API]    ├─ AI wanted: ${decisionResult.aiDisagreement.aiWanted}`);
+      console.log(`[API]    ├─ Rules chose: ${decisionResult.aiDisagreement.rulesChose}`);
+      console.log(`[API]    └─ Reason: ${decisionResult.aiDisagreement.reason}`);
+    }
+
+    // ========================================
+    // EXECUTA AÇÃO FINAL
+    // ========================================
+
+    // ✅ CORREÇÃO #9: KILL só acontece AQUI, após decisão
+    if (finalAction === DefensiveAction.KILL) {
+      console.log(`[API] 💀 KILL TRIGGERED BY DECISION ENGINE!`);
+      console.log(`[API]    └─ Reason: ${killReason || decisionResult.reason}`);
+      
       await killIdentity(identityId);
 
       return res.status(403).json({
         success: false,
         action: 'KILLED',
-        reason: killReason,
+        reason: killReason || decisionResult.reason,
         message: '💀 Identity permanently destroyed',
         details: {
           attempts: identity.attempts,
@@ -259,18 +309,25 @@ router.post('/check', async (req: Request, res: Response) => {
           maxAttempts: config.maxAttempts,
           regenerations: identity.regenerationCount,
           attemptsAfterRegenerate: identity.attemptsAfterRegenerate
-        }
+        },
+        aiAnalysis: aiAnalysis ? {
+          threatScore: aiAnalysis.riskAnalysis.threatScore,
+          confidence: aiAnalysis.riskAnalysis.confidence,
+          topFactors: aiAnalysis.riskAnalysis.topFactors,
+          pattern: aiAnalysis.threatPattern.pattern,
+          aiContribution: decisionResult.aiContribution,
+          aiDisagreement: decisionResult.aiDisagreement
+        } : null
       });
     }
 
-    // 🔥 LÓGICA DE LIE
-    if (identity.regenerationCount > 0 && identity.attemptsAfterRegenerate === 1) {
+    if (finalAction === DefensiveAction.LIE) {
       console.log(`[API] 🎭 LIE TRIGGERED!`);
 
       return res.status(401).json({
         success: false,
         action: 'LIE',
-        reason: 'Suspicious activity after regeneration',
+        reason: decisionResult.reason,
         message: '🎭 Fake data returned. Next failed attempt will KILL identity.',
         identity: {
           id: identity.id,
@@ -284,12 +341,17 @@ router.post('/check', async (req: Request, res: Response) => {
         },
         warning: '⚠️ LAST CHANCE! Next failure = destruction.',
         attemptsAfterRegenerate: identity.attemptsAfterRegenerate,
-        nextAction: 'KILL'
+        nextAction: 'KILL',
+        aiAnalysis: aiAnalysis ? {
+          threatScore: aiAnalysis.riskAnalysis.threatScore,
+          confidence: aiAnalysis.riskAnalysis.confidence,
+          topFactors: aiAnalysis.riskAnalysis.topFactors,
+          aiContribution: decisionResult.aiContribution
+        } : null
       });
     }
 
-    // 🔥 LÓGICA DE REGENERATE
-    if (identity.attempts >= config.regenerateThreshold && identity.regenerationCount === 0) {
+    if (finalAction === DefensiveAction.REGENERATE) {
       console.log(`[API] 🔄 REGENERATE TRIGGERED!`);
 
       await killIdentity(identityId);
@@ -313,7 +375,7 @@ router.post('/check', async (req: Request, res: Response) => {
       return res.json({
         success: true,
         action: 'REGENERATE',
-        reason: `Regenerated after ${identity.attempts} attempts`,
+        reason: decisionResult.reason,
         message: '🔄 Identity regenerated. Old one destroyed.',
         warning: '⚠️ Next defense layers: LIE → KILL',
         details: {
@@ -328,11 +390,16 @@ router.post('/check', async (req: Request, res: Response) => {
           privateKey: newIdentityResult.privateKey,
           paranoiaLevel: newIdentity.paranoiaLevel,
           expiresAt: newIdentity.expiresAt
-        }
+        },
+        aiAnalysis: aiAnalysis ? {
+          threatScore: aiAnalysis.riskAnalysis.threatScore,
+          confidence: aiAnalysis.riskAnalysis.confidence,
+          aiContribution: decisionResult.aiContribution
+        } : null
       });
     }
 
-    // 🔥 ALLOW (tentativa registrada)
+    // ALLOW (tentativa registrada)
     const remaining = config.maxAttempts - identity.attempts;
 
     return res.status(401).json({
@@ -343,7 +410,12 @@ router.post('/check', async (req: Request, res: Response) => {
       totalAttempts: identity.totalAttempts,
       maxAttempts: config.maxAttempts,
       remaining: remaining,
-      message: `Failed attempt logged. ${remaining} attempts remaining.`
+      message: `Failed attempt logged. ${remaining} attempts remaining.`,
+      aiAnalysis: aiAnalysis ? {
+        threatScore: aiAnalysis.riskAnalysis.threatScore,
+        confidence: aiAnalysis.riskAnalysis.confidence,
+        aiContribution: decisionResult.aiContribution
+      } : null
     });
 
   } catch (error) {
@@ -356,9 +428,6 @@ router.post('/check', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /identity/heartbeat
- */
 router.post('/heartbeat', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
@@ -383,7 +452,7 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    if (!validatedIdentity) {
+    if (!validatedIdentity || !validatedIdentity.isValidSignature) {
       return res.status(401).json({
         success: false,
         error: 'Invalid private key'
@@ -431,9 +500,6 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /identity/regenerate
- */
 router.post('/regenerate', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
@@ -447,7 +513,7 @@ router.post('/regenerate', async (req: Request, res: Response) => {
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    if (!validatedIdentity) {
+    if (!validatedIdentity || !validatedIdentity.isValidSignature) {
       return res.status(401).json({
         success: false,
         error: 'Invalid identity or private key'
@@ -479,9 +545,6 @@ router.post('/regenerate', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /identity/kill
- */
 router.post('/kill', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
@@ -495,7 +558,7 @@ router.post('/kill', async (req: Request, res: Response) => {
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    if (!validatedIdentity) {
+    if (!validatedIdentity || !validatedIdentity.isValidSignature) {
       return res.status(401).json({
         success: false,
         error: 'Invalid identity or private key'
@@ -525,9 +588,6 @@ router.post('/kill', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /identity/status/:id
- */
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;

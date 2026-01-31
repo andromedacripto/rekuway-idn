@@ -35,6 +35,10 @@ export interface Identity {
   lastHeartbeat?: number;              // Última confirmação de vida 🔥
   lastCheckIn?: number;                // Alias para lastHeartbeat
   deadmanTimerSeconds?: number;
+  
+  // ✅ ADICIONADO: Flag de validação criptográfica
+  // Retornado por validateIdentity() para indicar se a chave estava correta
+  isValidSignature?: boolean;
 }
 
 /**
@@ -89,8 +93,8 @@ export interface ParanoiaConfig {
   maxAttempts: number;              // Limite absoluto para KILL
   regenerateThreshold: number;      // Quando regenerar
   killThreshold: number;            // (deprecated, usar maxAttempts)
-  ttlSeconds: number;
+  ttl: number;                      // ✅ CORRIGIDO: ttl ao invés de ttlSeconds
   fakeFingerprintEnabled: boolean;
-  deadmanTimer: number | null;
-  description: string;
+  deadmanTimer?: number;            // ✅ ADICIONADO: opcional
+  description?: string;
 }

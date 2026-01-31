@@ -78,3 +78,10 @@ $RECYCLE.BIN/
 .env
 
 .vercel
+
+# Python Virtual Environment
+ai-service/venv/
+ai-service/__pycache__/
+ai-service/*.pyc
+ai-service/model.pkl
+ai-service/scaler.pkl
