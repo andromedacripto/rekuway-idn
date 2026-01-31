@@ -9,6 +9,7 @@ import paranoiaConfig from '../config/paranoia.json';
 import { extractFeatures, trackEndpoint } from '../services/featureExtraction';
 import { analyzeWithAI } from '../services/aiClient';
 import { combineDecisionsV3, DecisionContext } from '../services/decisionEngine';
+import { analyzeWithRailwayAI, convertToRailwayFeatures } from '../services/railwayAiClient';
 
 const router = Router();
 
@@ -62,8 +63,6 @@ router.post('/check', async (req: Request, res: Response) => {
 
     let identity = await db.getIdentity(identityId);
 
-    // ✅ CORREÇÃO #1: NÃO retorna KILL se identity não existe
-    // Apenas retorna 404 genérico
     if (!identity) {
       console.log(`[API] ❌ Identity not found: ${identityId}`);
       return res.status(404).json({
@@ -72,7 +71,6 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ CORREÇÃO #2: Verifica se está morta ANTES de processar
     if (!identity.isAlive) {
       console.log(`[API] ❌ Identity already dead: ${identityId}`);
       return res.status(403).json({
@@ -96,7 +94,6 @@ router.post('/check', async (req: Request, res: Response) => {
       if (timeSinceHeartbeat > deadmanTimerMs) {
         console.log(`[API] 💀 DEADMAN TIMER EXPIRED!`);
         
-        // ✅ CORREÇÃO #3: DEADMAN é exceção - pode KILL imediatamente
         await killIdentity(identityId);
 
         return res.status(403).json({
@@ -131,13 +128,12 @@ router.post('/check', async (req: Request, res: Response) => {
     const features = await extractFeatures(identity, clientIP, userAgent);
     await trackEndpoint(identityId, 'check');
     const aiAnalysis = await analyzeWithAI(features);
+    
+    const railwayFeatures = convertToRailwayFeatures(features);
+    const railwayAI = await analyzeWithRailwayAI(railwayFeatures);
 
-    // ✅ CORREÇÃO #4: validateIdentity SEMPRE retorna objeto ou null
-    // Objeto tem property isValidSignature: boolean
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
-    // ✅ CORREÇÃO #5: NÃO retorna KILL se validatedIdentity é null
-    // null significa "identity não encontrada ou expirada" - já tratado antes
     if (!validatedIdentity) {
       console.log(`[API] ❌ validateIdentity returned null (identity expired or deleted)`);
       return res.status(404).json({
@@ -149,9 +145,6 @@ router.post('/check', async (req: Request, res: Response) => {
     const isValidSignature = validatedIdentity.isValidSignature;
     console.log(`[API] 🔑 isValidSignature: ${isValidSignature}`);
 
-    // ========================================
-    // VALIDAÇÃO BEM-SUCEDIDA
-    // ========================================
     if (isValidSignature === true) {
       console.log(`[API] ✅ VALIDATION SUCCESSFUL - Valid cryptographic signature`);
 
@@ -189,20 +182,20 @@ router.post('/check', async (req: Request, res: Response) => {
           topFactors: aiAnalysis.riskAnalysis.topFactors,
           pattern: aiAnalysis.threatPattern.pattern,
           aiWasIgnored: true
+        } : null,
+        railwayAI: railwayAI ? {
+          threatScore: railwayAI.threatScore,
+          confidence: railwayAI.confidence,
+          recommendedAction: railwayAI.recommendedAction,
+          inferenceTimeMs: railwayAI.inferenceTimeMs
         } : null
       });
     }
 
-    // ========================================
-    // VALIDAÇÃO FALHOU
-    // ========================================
     console.log(`[API] ❌ VALIDATION FAILED - Invalid private key`);
 
-    // ✅ CORREÇÃO #6: Reload identity do Redis para garantir estado atual
     identity = await db.getIdentity(identityId);
 
-    // ✅ CORREÇÃO #7: Se identity sumiu durante processamento, retorna 404
-    // NÃO retorna KILL pois não foi o motor de decisão que matou
     if (!identity) {
       console.log(`[API] ⚠️ Identity disappeared during processing`);
       return res.status(404).json({
@@ -211,7 +204,6 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ CORREÇÃO #8: Incrementa contadores ANTES de decisão
     identity.attempts = (identity.attempts || 0) + 1;
     identity.totalAttempts = (identity.totalAttempts || 0) + 1;
     identity.lastAttemptAt = Date.now();
@@ -228,13 +220,9 @@ router.post('/check', async (req: Request, res: Response) => {
     console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
     console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
-    // ========================================
-    // DECISÃO BASEADA EM REGRAS
-    // ========================================
     let ruleBasedAction: DefensiveAction = DefensiveAction.ALLOW;
     let killReason = '';
 
-    // 🔥 LÓGICA DE KILL - Após regeneração
     if (identity.regenerationCount > 0) {
       if (identity.attemptsAfterRegenerate >= 2) {
         ruleBasedAction = DefensiveAction.KILL;
@@ -242,14 +230,12 @@ router.post('/check', async (req: Request, res: Response) => {
       }
     }
 
-    // 🔥 LÓGICA DE LIE - 1ª tentativa após regeneração
     if (ruleBasedAction === DefensiveAction.ALLOW && 
         identity.regenerationCount > 0 && 
         identity.attemptsAfterRegenerate === 1) {
       ruleBasedAction = DefensiveAction.LIE;
     }
 
-    // 🔥 LÓGICA DE REGENERATE - Usa > ao invés de >=
     if (ruleBasedAction === DefensiveAction.ALLOW && 
         identity.regenerationCount === 0 &&
         identity.attempts > config.regenerateThreshold) {
@@ -259,9 +245,6 @@ router.post('/check', async (req: Request, res: Response) => {
       console.log(`[API]    └─ regenerationCount: ${identity.regenerationCount}`);
     }
 
-    // ========================================
-    // COMBINA DECISÃO COM IA
-    // ========================================
     const decisionContext: DecisionContext = {
       ruleBasedAction,
       aiRecommendation: aiAnalysis?.riskAnalysis.recommendedAction || null,
@@ -277,6 +260,7 @@ router.post('/check', async (req: Request, res: Response) => {
 
     console.log(`[API] 🎯 Rule-Based: ${ruleBasedAction}`);
     console.log(`[API] 🤖 AI Recommended: ${aiAnalysis?.riskAnalysis.recommendedAction || 'N/A'}`);
+    console.log(`[API] 🚂 Railway AI: ${railwayAI?.recommendedAction || 'N/A'} (score: ${railwayAI?.threatScore.toFixed(3) || 'N/A'})`);
     console.log(`[API] ✅ Final Action: ${finalAction} (${decisionResult.aiContribution})`);
     console.log(`[API] 💯 Confidence: ${decisionResult.confidence.toFixed(2)}`);
 
@@ -287,11 +271,6 @@ router.post('/check', async (req: Request, res: Response) => {
       console.log(`[API]    └─ Reason: ${decisionResult.aiDisagreement.reason}`);
     }
 
-    // ========================================
-    // EXECUTA AÇÃO FINAL
-    // ========================================
-
-    // ✅ CORREÇÃO #9: KILL só acontece AQUI, após decisão
     if (finalAction === DefensiveAction.KILL) {
       console.log(`[API] 💀 KILL TRIGGERED BY DECISION ENGINE!`);
       console.log(`[API]    └─ Reason: ${killReason || decisionResult.reason}`);
@@ -317,6 +296,10 @@ router.post('/check', async (req: Request, res: Response) => {
           pattern: aiAnalysis.threatPattern.pattern,
           aiContribution: decisionResult.aiContribution,
           aiDisagreement: decisionResult.aiDisagreement
+        } : null,
+        railwayAI: railwayAI ? {
+          threatScore: railwayAI.threatScore,
+          recommendedAction: railwayAI.recommendedAction
         } : null
       });
     }
@@ -347,6 +330,10 @@ router.post('/check', async (req: Request, res: Response) => {
           confidence: aiAnalysis.riskAnalysis.confidence,
           topFactors: aiAnalysis.riskAnalysis.topFactors,
           aiContribution: decisionResult.aiContribution
+        } : null,
+        railwayAI: railwayAI ? {
+          threatScore: railwayAI.threatScore,
+          recommendedAction: railwayAI.recommendedAction
         } : null
       });
     }
@@ -395,11 +382,14 @@ router.post('/check', async (req: Request, res: Response) => {
           threatScore: aiAnalysis.riskAnalysis.threatScore,
           confidence: aiAnalysis.riskAnalysis.confidence,
           aiContribution: decisionResult.aiContribution
+        } : null,
+        railwayAI: railwayAI ? {
+          threatScore: railwayAI.threatScore,
+          recommendedAction: railwayAI.recommendedAction
         } : null
       });
     }
 
-    // ALLOW (tentativa registrada)
     const remaining = config.maxAttempts - identity.attempts;
 
     return res.status(401).json({
@@ -415,6 +405,11 @@ router.post('/check', async (req: Request, res: Response) => {
         threatScore: aiAnalysis.riskAnalysis.threatScore,
         confidence: aiAnalysis.riskAnalysis.confidence,
         aiContribution: decisionResult.aiContribution
+      } : null,
+      railwayAI: railwayAI ? {
+        threatScore: railwayAI.threatScore,
+        recommendedAction: railwayAI.recommendedAction,
+        inferenceTimeMs: railwayAI.inferenceTimeMs
       } : null
     });
 
