@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { createIdentity, validateIdentity, killIdentity, regenerateIdentity } from '../services/identityService';
 import { defensiveResponse, detectThreatEvent } from '../services/defensiveService';
