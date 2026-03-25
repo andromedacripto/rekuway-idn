@@ -13,6 +13,9 @@ import { analyzeWithRailwayAI, convertToRailwayFeatures } from '../services/rail
 
 const router = Router();
 
+// ─────────────────────────────────────────────
+//  POST /identity/new
+// ─────────────────────────────────────────────
 router.post('/new',
   requireApiKey,
   checkIdentityCreationLimit,
@@ -29,196 +32,113 @@ router.post('/new',
 
     const result = await createIdentity(paranoiaLevel);
 
+    // ✅ Expõe APENAS o necessário — sem estado interno
     res.json({
       success: true,
       message: '⚠️ SAVE YOUR PRIVATE KEY! It will never be shown again.',
-      identity: result.identity,
-      privateKey: result.privateKey
+      identity: {
+        id:           result.identity.id,
+        publicKey:    result.identity.publicKey,
+        paranoiaLevel: result.identity.paranoiaLevel,
+        expiresAt:    result.identity.expiresAt,
+      },
+      privateKey: result.privateKey,
     });
   } catch (error) {
     console.error('[API] Error creating identity:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create identity'
-    });
+    res.status(500).json({ success: false, error: 'Failed to create identity' });
   }
 });
 
+// ─────────────────────────────────────────────
+//  POST /identity/check
+// ─────────────────────────────────────────────
 router.post('/check', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
-    const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+    const clientIP  = req.ip || req.connection.remoteAddress || 'unknown';
     const userAgent = req.headers['user-agent'] || '';
 
     if (!identityId || !privateKey) {
-      return res.status(400).json({
-        success: false,
-        error: 'identityId and privateKey are required'
-      });
+      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
     }
-
-    console.log(`\n[API] ========================================`);
-    console.log(`[API] 🔍 Check from IP: ${clientIP}`);
-    console.log(`[API] 🆔 Identity: ${identityId}`);
 
     let identity = await db.getIdentity(identityId);
 
     if (!identity) {
-      console.log(`[API] ❌ Identity not found: ${identityId}`);
-      return res.status(404).json({
-        success: false,
-        error: 'Identity not found'
-      });
+      return res.status(404).json({ success: false, error: 'Identity not found' });
     }
 
     if (!identity.isAlive) {
-      console.log(`[API] ❌ Identity already dead: ${identityId}`);
-      return res.status(403).json({
-        success: false,
-        action: 'KILLED',
-        error: 'Identity was previously destroyed'
-      });
+      return res.status(403).json({ success: false, action: 'KILLED', error: 'Identity was previously destroyed' });
     }
 
     if (identity.paranoiaLevel === 'deadman') {
-      const config = paranoiaConfig.deadman;
+      const config         = paranoiaConfig.deadman;
       const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
-      const lastHeartbeat = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
-      const timeSinceHeartbeat = Date.now() - lastHeartbeat;
+      const lastHeartbeat  = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
+      const timeSince      = Date.now() - lastHeartbeat;
 
-      console.log(`[API] 💓 DEADMAN CHECK:`);
-      console.log(`[API]    ├─ Last heartbeat: ${new Date(lastHeartbeat).toISOString()}`);
-      console.log(`[API]    ├─ Time since: ${Math.floor(timeSinceHeartbeat / 1000)}s`);
-      console.log(`[API]    └─ Timer limit: ${config.deadmanTimer}s`);
-
-      if (timeSinceHeartbeat > deadmanTimerMs) {
-        console.log(`[API] 💀 DEADMAN TIMER EXPIRED!`);
-        
+      if (timeSince > deadmanTimerMs) {
         await killIdentity(identityId);
-
-        return res.status(403).json({
-          success: false,
-          action: 'KILLED',
-          error: 'Deadman timer expired - identity destroyed',
-          reason: 'Deadman timer expired',
-          timeSinceHeartbeat: Math.floor(timeSinceHeartbeat / 1000)
-        });
+        return res.status(403).json({ success: false, action: 'KILLED', error: 'Identity destroyed' });
       }
     }
 
     const config = paranoiaConfig[identity.paranoiaLevel];
 
-    if (typeof identity.totalAttempts === 'undefined') {
-      identity.totalAttempts = identity.attempts;
-    }
-    if (typeof identity.regenerationCount === 'undefined') {
-      identity.regenerationCount = 0;
-    }
-    if (typeof identity.attemptsAfterRegenerate === 'undefined') {
-      identity.attemptsAfterRegenerate = 0;
-    }
+    if (typeof identity.totalAttempts         === 'undefined') identity.totalAttempts         = identity.attempts;
+    if (typeof identity.regenerationCount     === 'undefined') identity.regenerationCount     = 0;
+    if (typeof identity.attemptsAfterRegenerate === 'undefined') identity.attemptsAfterRegenerate = 0;
 
-    console.log(`[API] 📊 Stats BEFORE validation:`);
-    console.log(`[API]    ├─ Level: ${identity.paranoiaLevel}`);
-    console.log(`[API]    ├─ Attempts: ${identity.attempts}/${config.maxAttempts}`);
-    console.log(`[API]    ├─ Total: ${identity.totalAttempts}`);
-    console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
-    console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
-
-    const features = await extractFeatures(identity, clientIP, userAgent);
+    const features       = await extractFeatures(identity, clientIP, userAgent);
     await trackEndpoint(identityId, 'check');
-    const aiAnalysis = await analyzeWithAI(features);
-    
+    const aiAnalysis     = await analyzeWithAI(features);
     const railwayFeatures = convertToRailwayFeatures(features);
-    const railwayAI = await analyzeWithRailwayAI(railwayFeatures);
-
+    const railwayAI      = await analyzeWithRailwayAI(railwayFeatures);
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
-      console.log(`[API] ❌ validateIdentity returned null (identity expired or deleted)`);
-      return res.status(404).json({
-        success: false,
-        error: 'Identity not found or expired'
-      });
+      return res.status(404).json({ success: false, error: 'Identity not found or expired' });
     }
 
     const isValidSignature = validatedIdentity.isValidSignature;
-    console.log(`[API] 🔑 isValidSignature: ${isValidSignature}`);
 
+    // ── ALLOWED (assinatura válida) ───────────────────────────
     if (isValidSignature === true) {
-      console.log(`[API] ✅ VALIDATION SUCCESSFUL - Valid cryptographic signature`);
-
       if (identity.paranoiaLevel === 'deadman') {
         const now = Date.now();
         identity.lastHeartbeat = now;
-        identity.lastCheckIn = now;
-        console.log(`[API] 💓 Heartbeat auto-updated`);
+        identity.lastCheckIn   = now;
       }
-
-      identity.attempts = 0;
+      identity.attempts               = 0;
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
 
-      console.log(`[API] 🔄 Counters reset`);
-      console.log(`[API] 🎯 Final Action: ALLOWED (validation successful)`);
-      console.log(`[API] ========================================\n`);
-
+      // ✅ Sem contadores, sem estado interno
       return res.json({
         success: true,
-        action: 'ALLOWED',
-        reason: 'Valid cryptographic signature',
+        action:  'ALLOWED',
         identity: {
-          id: validatedIdentity.id,
-          publicKey: validatedIdentity.publicKey,
+          id:           validatedIdentity.id,
+          publicKey:    validatedIdentity.publicKey,
           paranoiaLevel: validatedIdentity.paranoiaLevel,
-          expiresAt: validatedIdentity.expiresAt,
-          attempts: 0,
-          totalAttempts: validatedIdentity.totalAttempts || 0,
-          regenerationCount: validatedIdentity.regenerationCount || 0
+          expiresAt:    validatedIdentity.expiresAt,
         },
-        aiAnalysis: aiAnalysis ? {
-          threatScore: aiAnalysis.riskAnalysis.threatScore,
-          confidence: aiAnalysis.riskAnalysis.confidence,
-          topFactors: aiAnalysis.riskAnalysis.topFactors,
-          pattern: aiAnalysis.threatPattern.pattern,
-          aiWasIgnored: true
-        } : null,
-        railwayAI: railwayAI ? {
-          threatScore: railwayAI.threatScore,
-          confidence: railwayAI.confidence,
-          recommendedAction: railwayAI.recommendedAction,
-          inferenceTimeMs: railwayAI.inferenceTimeMs
-        } : null
       });
     }
 
-    console.log(`[API] ❌ VALIDATION FAILED - Invalid private key`);
-
+    // ── Falha de validação — atualiza contadores internamente ─
     identity = await db.getIdentity(identityId);
+    if (!identity) return res.status(404).json({ success: false, error: 'Identity not found' });
 
-    if (!identity) {
-      console.log(`[API] ⚠️ Identity disappeared during processing`);
-      return res.status(404).json({
-        success: false,
-        error: 'Identity not found'
-      });
-    }
-
-    identity.attempts = (identity.attempts || 0) + 1;
-    identity.totalAttempts = (identity.totalAttempts || 0) + 1;
-    identity.lastAttemptAt = Date.now();
-
+    identity.attempts               = (identity.attempts || 0) + 1;
+    identity.totalAttempts          = (identity.totalAttempts || 0) + 1;
+    identity.lastAttemptAt          = Date.now();
     if (identity.regenerationCount > 0) {
       identity.attemptsAfterRegenerate = (identity.attemptsAfterRegenerate || 0) + 1;
     }
-
     await db.set(`identity:${identityId}`, identity);
-
-    console.log(`[API] 📈 Updated AFTER failed validation:`);
-    console.log(`[API]    ├─ Attempts: ${identity.attempts}`);
-    console.log(`[API]    ├─ Total: ${identity.totalAttempts}`);
-    console.log(`[API]    ├─ Regenerations: ${identity.regenerationCount}`);
-    console.log(`[API]    └─ After regenerate: ${identity.attemptsAfterRegenerate}`);
 
     let ruleBasedAction: DefensiveAction = DefensiveAction.ALLOW;
     let killReason = '';
@@ -229,392 +149,243 @@ router.post('/check', async (req: Request, res: Response) => {
         killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
       }
     }
-
-    if (ruleBasedAction === DefensiveAction.ALLOW && 
-        identity.regenerationCount > 0 && 
+    if (ruleBasedAction === DefensiveAction.ALLOW &&
+        identity.regenerationCount > 0 &&
         identity.attemptsAfterRegenerate === 1) {
       ruleBasedAction = DefensiveAction.LIE;
     }
-
-    if (ruleBasedAction === DefensiveAction.ALLOW && 
+    if (ruleBasedAction === DefensiveAction.ALLOW &&
         identity.regenerationCount === 0 &&
         identity.attempts > config.regenerateThreshold) {
       ruleBasedAction = DefensiveAction.REGENERATE;
-      console.log(`[API] 🔄 REGENERATE condition met:`);
-      console.log(`[API]    ├─ attempts (${identity.attempts}) > threshold (${config.regenerateThreshold})`);
-      console.log(`[API]    └─ regenerationCount: ${identity.regenerationCount}`);
     }
 
     const decisionContext: DecisionContext = {
       ruleBasedAction,
-      aiRecommendation: aiAnalysis?.riskAnalysis.recommendedAction || null,
+      aiRecommendation:    aiAnalysis?.riskAnalysis.recommendedAction || null,
       validationSuccessful: false,
-      threatScore: aiAnalysis?.riskAnalysis.threatScore || 0,
-      confidence: aiAnalysis?.riskAnalysis.confidence || 'low',
-      topFactors: aiAnalysis?.riskAnalysis.topFactors || [],
-      identityId
+      threatScore:         aiAnalysis?.riskAnalysis.threatScore || 0,
+      confidence:          aiAnalysis?.riskAnalysis.confidence || 'low',
+      topFactors:          aiAnalysis?.riskAnalysis.topFactors || [],
+      identityId,
     };
 
     const decisionResult = await combineDecisionsV3(decisionContext);
-    const finalAction = decisionResult.action;
+    const finalAction    = decisionResult.action;
 
-    console.log(`[API] 🎯 Rule-Based: ${ruleBasedAction}`);
-    console.log(`[API] 🤖 AI Recommended: ${aiAnalysis?.riskAnalysis.recommendedAction || 'N/A'}`);
-    console.log(`[API] 🚂 Railway AI: ${railwayAI?.recommendedAction || 'N/A'} (score: ${railwayAI?.threatScore.toFixed(3) || 'N/A'})`);
-    console.log(`[API] ✅ Final Action: ${finalAction} (${decisionResult.aiContribution})`);
-    console.log(`[API] 💯 Confidence: ${decisionResult.confidence.toFixed(2)}`);
-
-    if (decisionResult.aiDisagreement) {
-      console.log(`[API] ⚠️  AI DISAGREEMENT DETECTED:`);
-      console.log(`[API]    ├─ AI wanted: ${decisionResult.aiDisagreement.aiWanted}`);
-      console.log(`[API]    ├─ Rules chose: ${decisionResult.aiDisagreement.rulesChose}`);
-      console.log(`[API]    └─ Reason: ${decisionResult.aiDisagreement.reason}`);
-    }
-
+    // ── KILL ─────────────────────────────────────────────────
     if (finalAction === DefensiveAction.KILL) {
-      console.log(`[API] 💀 KILL TRIGGERED BY DECISION ENGINE!`);
-      console.log(`[API]    └─ Reason: ${killReason || decisionResult.reason}`);
-      
       await killIdentity(identityId);
-
+      // ✅ Sem detalhes de contadores
       return res.status(403).json({
         success: false,
-        action: 'KILLED',
-        reason: killReason || decisionResult.reason,
-        message: '💀 Identity permanently destroyed',
-        details: {
-          attempts: identity.attempts,
-          totalAttempts: identity.totalAttempts,
-          maxAttempts: config.maxAttempts,
-          regenerations: identity.regenerationCount,
-          attemptsAfterRegenerate: identity.attemptsAfterRegenerate
-        },
-        aiAnalysis: aiAnalysis ? {
-          threatScore: aiAnalysis.riskAnalysis.threatScore,
-          confidence: aiAnalysis.riskAnalysis.confidence,
-          topFactors: aiAnalysis.riskAnalysis.topFactors,
-          pattern: aiAnalysis.threatPattern.pattern,
-          aiContribution: decisionResult.aiContribution,
-          aiDisagreement: decisionResult.aiDisagreement
-        } : null,
-        railwayAI: railwayAI ? {
-          threatScore: railwayAI.threatScore,
-          recommendedAction: railwayAI.recommendedAction
-        } : null
+        action:  'KILLED',
+        error:   'Identity destroyed',
       });
     }
 
+    // ── LIE ──────────────────────────────────────────────────
     if (finalAction === DefensiveAction.LIE) {
-      console.log(`[API] 🎭 LIE TRIGGERED!`);
-
+      // ✅ Retorna fake sem revelar que é LIE nem aviso de próxima ação
       return res.status(401).json({
         success: false,
-        action: 'LIE',
-        reason: decisionResult.reason,
-        message: '🎭 Fake data returned. Next failed attempt will KILL identity.',
-        identity: {
-          id: identity.id,
-          publicKey: identity.publicKey,
-          metadata: identity.fakeMetadata || {
-            ip: '198.51.100.0',
-            location: 'Unknown Location',
-            userAgent: 'Mozilla/5.0 (Generic)',
-            device: 'Unknown Device'
-          }
-        },
-        warning: '⚠️ LAST CHANCE! Next failure = destruction.',
-        attemptsAfterRegenerate: identity.attemptsAfterRegenerate,
-        nextAction: 'KILL',
-        aiAnalysis: aiAnalysis ? {
-          threatScore: aiAnalysis.riskAnalysis.threatScore,
-          confidence: aiAnalysis.riskAnalysis.confidence,
-          topFactors: aiAnalysis.riskAnalysis.topFactors,
-          aiContribution: decisionResult.aiContribution
-        } : null,
-        railwayAI: railwayAI ? {
-          threatScore: railwayAI.threatScore,
-          recommendedAction: railwayAI.recommendedAction
-        } : null
+        action:  'ALLOWED',
+        error:   'Invalid identity or private key',
       });
     }
 
+    // ── REGENERATE ───────────────────────────────────────────
     if (finalAction === DefensiveAction.REGENERATE) {
-      console.log(`[API] 🔄 REGENERATE TRIGGERED!`);
-
       await killIdentity(identityId);
-
       const newIdentityResult = await createIdentity(identity.paranoiaLevel);
 
       if (!newIdentityResult) {
-        return res.status(500).json({
-          success: false,
-          action: 'ERROR',
-          error: 'Failed to regenerate identity'
-        });
+        return res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
       }
 
-      const newIdentity = newIdentityResult.identity;
-      newIdentity.totalAttempts = identity.totalAttempts;
-      newIdentity.regenerationCount = (identity.regenerationCount || 0) + 1;
-      newIdentity.attemptsAfterRegenerate = 0;
+      const newIdentity                    = newIdentityResult.identity;
+      newIdentity.totalAttempts            = identity.totalAttempts;
+      newIdentity.regenerationCount        = (identity.regenerationCount || 0) + 1;
+      newIdentity.attemptsAfterRegenerate  = 0;
       await db.set(`identity:${newIdentity.id}`, newIdentity);
 
+      // ✅ Sem contadores, sem warning de próxima camada
       return res.json({
         success: true,
-        action: 'REGENERATE',
-        reason: decisionResult.reason,
-        message: '🔄 Identity regenerated. Old one destroyed.',
-        warning: '⚠️ Next defense layers: LIE → KILL',
-        details: {
-          totalAttempts: identity.totalAttempts,
-          maxAttempts: config.maxAttempts,
-          regenerations: newIdentity.regenerationCount,
-          remaining: config.maxAttempts - identity.totalAttempts
-        },
-        newIdentity: {
-          id: newIdentity.id,
-          publicKey: newIdentity.publicKey,
-          privateKey: newIdentityResult.privateKey,
+        action:  'REGENERATE',
+        identity: {
+          id:           newIdentity.id,
+          publicKey:    newIdentity.publicKey,
           paranoiaLevel: newIdentity.paranoiaLevel,
-          expiresAt: newIdentity.expiresAt
+          expiresAt:    newIdentity.expiresAt,
         },
-        aiAnalysis: aiAnalysis ? {
-          threatScore: aiAnalysis.riskAnalysis.threatScore,
-          confidence: aiAnalysis.riskAnalysis.confidence,
-          aiContribution: decisionResult.aiContribution
-        } : null,
-        railwayAI: railwayAI ? {
-          threatScore: railwayAI.threatScore,
-          recommendedAction: railwayAI.recommendedAction
-        } : null
+        privateKey: newIdentityResult.privateKey,
       });
     }
 
-    const remaining = config.maxAttempts - identity.attempts;
-
+    // ── ALLOW (falha simples) ────────────────────────────────
+    // ✅ Sem contadores, sem "X tentativas restantes"
     return res.status(401).json({
       success: false,
-      action: 'ALLOWED',
-      error: 'Invalid identity or private key',
-      attempts: identity.attempts,
-      totalAttempts: identity.totalAttempts,
-      maxAttempts: config.maxAttempts,
-      remaining: remaining,
-      message: `Failed attempt logged. ${remaining} attempts remaining.`,
-      aiAnalysis: aiAnalysis ? {
-        threatScore: aiAnalysis.riskAnalysis.threatScore,
-        confidence: aiAnalysis.riskAnalysis.confidence,
-        aiContribution: decisionResult.aiContribution
-      } : null,
-      railwayAI: railwayAI ? {
-        threatScore: railwayAI.threatScore,
-        recommendedAction: railwayAI.recommendedAction,
-        inferenceTimeMs: railwayAI.inferenceTimeMs
-      } : null
+      action:  'ALLOWED',
+      error:   'Invalid identity or private key',
     });
 
   } catch (error) {
     console.error('[API] ❌ Error:', error);
-    res.status(500).json({
-      success: false,
-      action: 'ERROR',
-      error: 'Failed to check identity'
-    });
+    res.status(500).json({ success: false, error: 'Failed to check identity' });
   }
 });
 
+// ─────────────────────────────────────────────
+//  POST /identity/heartbeat
+// ─────────────────────────────────────────────
 router.post('/heartbeat', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
 
     if (!identityId || !privateKey) {
-      return res.status(400).json({
-        success: false,
-        error: 'identityId and privateKey are required'
-      });
+      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
     }
-
-    console.log(`[API] 💓 Heartbeat request for: ${identityId}`);
 
     const identity = await db.getIdentity(identityId);
 
     if (!identity || !identity.isAlive) {
-      return res.status(404).json({
-        success: false,
-        error: 'Identity not found or already destroyed'
-      });
+      return res.status(404).json({ success: false, error: 'Identity not found or already destroyed' });
     }
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity || !validatedIdentity.isValidSignature) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid private key'
-      });
+      return res.status(401).json({ success: false, error: 'Invalid private key' });
     }
 
     if (identity.paranoiaLevel !== 'deadman') {
-      return res.status(400).json({
-        success: false,
-        error: 'Heartbeat only available for DEADMAN level identities'
-      });
+      return res.status(400).json({ success: false, error: 'Heartbeat only available for DEADMAN level identities' });
     }
 
     const updated = await updateHeartbeat(identityId);
 
     if (!updated) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to update heartbeat'
-      });
+      return res.status(500).json({ success: false, error: 'Failed to update heartbeat' });
     }
 
-    const config = paranoiaConfig.deadman;
-    const now = Date.now();
+    const config      = paranoiaConfig.deadman;
+    const now         = Date.now();
     const nextDeadline = now + ((config.deadmanTimer || 60) * 1000);
 
+    // ✅ Sem estado interno além do necessário pro cliente operar
     res.json({
-      success: true,
-      message: '💓 Heartbeat updated',
+      success:  true,
       identity: {
-        id: identity.id,
-        paranoiaLevel: identity.paranoiaLevel,
-        lastHeartbeat: now,
-        nextDeadline: nextDeadline,
-        remainingSeconds: config.deadmanTimer
-      }
+        id:              identity.id,
+        paranoiaLevel:   identity.paranoiaLevel,
+        nextDeadline,
+        remainingSeconds: config.deadmanTimer,
+      },
     });
 
   } catch (error) {
     console.error('[API] Error in /heartbeat:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
+// ─────────────────────────────────────────────
+//  POST /identity/regenerate
+// ─────────────────────────────────────────────
 router.post('/regenerate', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
 
     if (!identityId || !privateKey) {
-      return res.status(400).json({
-        success: false,
-        error: 'identityId and privateKey are required'
-      });
+      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
     }
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity || !validatedIdentity.isValidSignature) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid identity or private key'
-      });
+      return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
     }
 
     const newIdentity = await regenerateIdentity(identityId);
 
     if (!newIdentity) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to regenerate identity'
-      });
+      return res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
     }
 
+    // ✅ Só expõe o mínimo pra o cliente usar a nova identidade
     res.json({
       success: true,
-      message: '🔄 Identity regenerated',
-      identity: newIdentity.identity,
-      privateKey: newIdentity.privateKey
+      identity: {
+        id:           newIdentity.identity.id,
+        publicKey:    newIdentity.identity.publicKey,
+        paranoiaLevel: newIdentity.identity.paranoiaLevel,
+        expiresAt:    newIdentity.identity.expiresAt,
+      },
+      privateKey: newIdentity.privateKey,
     });
 
   } catch (error) {
     console.error('[API] Error regenerating:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to regenerate identity'
-    });
+    res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
   }
 });
 
+// ─────────────────────────────────────────────
+//  POST /identity/kill
+// ─────────────────────────────────────────────
 router.post('/kill', async (req: Request, res: Response) => {
   try {
     const { identityId, privateKey } = req.body;
 
     if (!identityId || !privateKey) {
-      return res.status(400).json({
-        success: false,
-        error: 'identityId and privateKey are required'
-      });
+      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
     }
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity || !validatedIdentity.isValidSignature) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid identity or private key'
-      });
+      return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
     }
 
     const killed = await killIdentity(identityId);
 
     if (!killed) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to destroy identity'
-      });
+      return res.status(500).json({ success: false, error: 'Failed to destroy identity' });
     }
 
-    res.json({
-      success: true,
-      message: '💀 Identity destroyed'
-    });
+    res.json({ success: true });
 
   } catch (error) {
     console.error('[API] Error killing:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to destroy identity'
-    });
+    res.status(500).json({ success: false, error: 'Failed to destroy identity' });
   }
 });
 
+// ─────────────────────────────────────────────
+//  GET /identity/status/:id
+// ─────────────────────────────────────────────
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const identity = await db.getIdentity(id);
+    const { id }    = req.params;
+    const identity  = await db.getIdentity(id);
 
     if (!identity || !identity.isAlive) {
-      return res.status(404).json({
-        exists: false,
-        message: 'Identity not found or destroyed'
-      });
+      // ✅ Não confirma se existiu — só diz que não está disponível
+      return res.status(404).json({ exists: false });
     }
 
-    const config = paranoiaConfig[identity.paranoiaLevel];
-
+    // ✅ Sem contadores internos, sem regenerationCount, sem attemptsAfterRegenerate
     res.json({
-      exists: true,
-      expiresAt: identity.expiresAt,
+      exists:       true,
       paranoiaLevel: identity.paranoiaLevel,
-      attempts: identity.attempts,
-      totalAttempts: identity.totalAttempts || identity.attempts,
-      maxAttempts: config.maxAttempts,
-      regenerations: identity.regenerationCount || 0,
-      attemptsAfterRegenerate: identity.attemptsAfterRegenerate || 0,
-      remaining: config.maxAttempts - (identity.attempts || 0)
+      expiresAt:    identity.expiresAt,
     });
 
   } catch (error) {
     console.error('[API] Error checking status:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to check status'
-    });
+    res.status(500).json({ success: false, error: 'Failed to check status' });
   }
 });
 
