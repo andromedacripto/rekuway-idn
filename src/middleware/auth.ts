@@ -24,45 +24,48 @@ const HONEYPOT_KEYS = new Set([
 ]);
 
 // ─────────────────────────────────────────────
-//  FAKE METADATA — infra realista
-//  Mistura AWS / GCP / Cloudflare propositalmente
-//  para dificultar fingerprint de vendor
+//  FAKE METADATA — máxima variabilidade
+//  Regras:
+//  - providers misturados incluindo edge/cdn genéricos
+//  - zonas opacas (cluster-N, node-N) sem semântica geográfica óbvia
+//  - reasons neutros: não revelam lógica interna
+//  - latência coerente com o delay real aplicado (80–220ms)
 // ─────────────────────────────────────────────
 const FAKE_INFRA = {
   providers: [
-    { provider: 'aws',        regions: ['us-east-1','us-west-2','eu-west-1','ap-southeast-1','sa-east-1'] },
-    { provider: 'gcp',        regions: ['us-central1','europe-west1','asia-east1','southamerica-east1'] },
-    { provider: 'cloudflare', regions: ['GRU','GIG','EWR','LHR','SIN','NRT'] },
+    // providers reais — variam o vendor fingerprintado
+    { provider: 'aws',   zones: ['cluster-3','cluster-11','cluster-19','cluster-27','cluster-34'] },
+    { provider: 'azure', zones: ['cluster-5','cluster-14','cluster-22','cluster-38','cluster-41'] },
+    { provider: 'gcp',   zones: ['cluster-2','cluster-9','cluster-17','cluster-29','cluster-45'] },
+    // providers opacos — sem referência geográfica
+    { provider: 'edge',  zones: ['node-7','node-13','node-21','node-33','node-50'] },
+    { provider: 'cdn-x', zones: ['node-4','node-18','node-26','node-37','node-44'] },
   ],
-  gateways : ['edge-a1','edge-b2','core-mx3','proxy-r4','lb-f5','ingress-g6'],
-  reasons  : [
-    'constraint_violation',
-    'policy_mismatch',
-    'quota_exceeded',
-    'session_expired',
-    'token_rotation',
-    'geo_restriction',
-    'account_suspended',
-    'invalid_scope',
+  gateways : [
+    'gw-c1','gw-f2','gw-a3','gw-d4','gw-b5',
+    'gw-e6','gw-h7','gw-g8','gw-i9','gw-j10',
   ],
+  // reasons neutros — não revelam lógica de auth
+  reasons: ['processed','handled','accepted','ok','completed','forwarded','routed','dispatched'],
 };
+
+// Marcador de tempo do início do delay — exportado internamente pra latência coerente
+let _requestStart = 0;
 
 function fakeMetadata() {
   const infra   = FAKE_INFRA.providers[Math.floor(Math.random() * FAKE_INFRA.providers.length)];
-  const region  = infra.regions [Math.floor(Math.random() * infra.regions.length)];
+  const zone    = infra.zones   [Math.floor(Math.random() * infra.zones.length)];
   const gateway = FAKE_INFRA.gateways[Math.floor(Math.random() * FAKE_INFRA.gateways.length)];
   const reason  = FAKE_INFRA.reasons [Math.floor(Math.random() * FAKE_INFRA.reasons.length)];
 
-  // latência coerente: cloudflare < gcp < aws (realismo)
-  const baseLatency = infra.provider === 'cloudflare' ? 8
-                    : infra.provider === 'gcp'        ? 18
-                    :                                   32;
-  const latency = baseLatency + Math.floor(Math.random() * 15);
+  // latência coerente: reflete o tempo real decorrido desde o início do delay
+  const elapsed   = _requestStart > 0 ? Date.now() - _requestStart : 80 + Math.floor(Math.random() * 60);
+  const latency   = elapsed + Math.floor(Math.random() * 8); // leve ruído em cima do real
 
   return {
     request_id : crypto.randomUUID(),
     provider   : infra.provider,
-    region,
+    zone,
     gateway,
     reason,
     latency_ms : latency,
@@ -133,6 +136,7 @@ function logHoneypotHit(req: Request, apiKeyString: string) {
 // ─────────────────────────────────────────────
 export async function requireApiKey(req: Request, res: Response, next: NextFunction) {
   try {
+    _requestStart = Date.now();
     await nonLinearJitter();
 
     const authHeader  = req.headers.authorization;
