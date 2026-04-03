@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { Identity } from '../models/Identity';
 import { db } from '../config/database';
 import { generateKeyPair, hashValue, generateFakeMetadata } from '../utils/crypto';
+import { safeLog, safeError } from '../utils/sanitize';
 import paranoiaConfig from '../config/paranoia.json';
 
 export async function createIdentity(
@@ -30,54 +31,69 @@ export async function createIdentity(
       isAlive: true,
       lastHeartbeat: paranoiaLevel === 'deadman' ? now : undefined,
       lastCheckIn: paranoiaLevel === 'deadman' ? now : undefined,
-      deadmanTimerSeconds: paranoiaLevel === 'deadman' ? (config as any).deadmanTimer : undefined
+      deadmanTimerSeconds: paranoiaLevel === 'deadman' ? (config as any).deadmanTimer : undefined,
     };
 
-    console.log(`[IDENTITY] Creating identity: ${identity.id}`);
-    console.log(`[IDENTITY]   ├─ Level: ${paranoiaLevel}`);
-    console.log(`[IDENTITY]   ├─ Hash: ${identity.privateKeyHash.substring(0, 20)}...`);
-    console.log(`[IDENTITY]   └─ Expires: ${new Date(expiresAt).toISOString()}`);
-    
-    await db.setIdentity(identity.id, identity);
-    console.log(`[IDENTITY] ✅ Created: ${identity.id}`);
+    // ✅ SEGURO: loga apenas id, level e expiresAt — jamais privateKey ou hash completo
+    safeLog(`[IDENTITY] Creating:`, {
+      id: identity.id,
+      paranoiaLevel,
+      expiresAt: new Date(expiresAt).toISOString(),
+    });
 
+    await db.setIdentity(identity.id, identity);
+
+    safeLog(`[IDENTITY] ✅ Created:`, { id: identity.id });
+
+    // privateKey é retornada para a camada de rota,
+    // que a repassa UMA ÚNICA VEZ na resposta HTTP.
+    // Ela NUNCA deve aparecer em logs.
     return { identity, privateKey };
   } catch (error) {
-    console.error('[IDENTITY] ❌ Error creating identity:', error);
+    safeError('[IDENTITY] ❌ Error creating identity:', error);
     throw new Error('Failed to create identity');
   }
 }
 
-export async function regenerateIdentity(oldIdentityId: string): Promise<{ identity: Identity; privateKey: string } | null> {
+export async function regenerateIdentity(
+  oldIdentityId: string
+): Promise<{ identity: Identity; privateKey: string } | null> {
   try {
     const oldIdentity = await db.getIdentity(oldIdentityId);
-    
+
     if (!oldIdentity) {
-      console.log(`[IDENTITY] Cannot regenerate: identity ${oldIdentityId} not found`);
+      safeLog(`[IDENTITY] Cannot regenerate: not found`, { id: oldIdentityId });
       return null;
     }
 
-    console.log(`[IDENTITY] 🔄 Regenerating: ${oldIdentityId}`);
-    console.log(`[IDENTITY]   ├─ Old total attempts: ${oldIdentity.totalAttempts}`);
-    console.log(`[IDENTITY]   └─ Old regenerations: ${oldIdentity.regenerationCount}`);
+    // ✅ SEGURO: apenas IDs e contadores
+    safeLog(`[IDENTITY] 🔄 Regenerating:`, {
+      oldId: oldIdentityId,
+      totalAttempts: oldIdentity.totalAttempts,
+      regenerationCount: oldIdentity.regenerationCount,
+    });
 
     await killIdentity(oldIdentityId);
     const newIdentityResult = await createIdentity(oldIdentity.paranoiaLevel);
     const newIdentity = newIdentityResult.identity;
-    
+
     newIdentity.totalAttempts = oldIdentity.totalAttempts || 0;
     newIdentity.regenerationCount = (oldIdentity.regenerationCount || 0) + 1;
     newIdentity.attemptsAfterRegenerate = 0;
-    
+
     await db.setIdentity(newIdentity.id, newIdentity);
 
-    console.log(`[IDENTITY] ✅ Regenerated: ${oldIdentityId} -> ${newIdentity.id}`);
-    console.log(`[IDENTITY]   ├─ New total attempts: ${newIdentity.totalAttempts}`);
-    console.log(`[IDENTITY]   └─ New regenerations: ${newIdentity.regenerationCount}`);
+    // ✅ SEGURO: log sem privateKey
+    safeLog(`[IDENTITY] ✅ Regenerated:`, {
+      oldId: oldIdentityId,
+      newId: newIdentity.id,
+      totalAttempts: newIdentity.totalAttempts,
+      regenerationCount: newIdentity.regenerationCount,
+    });
 
     return { identity: newIdentity, privateKey: newIdentityResult.privateKey };
   } catch (error) {
-    console.error('[IDENTITY] ❌ Error regenerating identity:', error);
+    safeError('[IDENTITY] ❌ Error regenerating identity:', error);
     throw new Error('Failed to regenerate identity');
   }
 }
@@ -85,98 +101,88 @@ export async function regenerateIdentity(oldIdentityId: string): Promise<{ ident
 export async function killIdentity(identityId: string): Promise<boolean> {
   try {
     const identity = await db.getIdentity(identityId);
-    
+
     if (!identity) {
-      console.log(`[IDENTITY] Kill failed: identity ${identityId} not found`);
+      safeLog(`[IDENTITY] Kill skipped: not found`, { id: identityId });
       return false;
     }
 
-    console.log(`[IDENTITY] 💀 KILLING: ${identityId}`);
-    console.log(`[IDENTITY]   ├─ Total attempts: ${identity.totalAttempts}`);
-    console.log(`[IDENTITY]   ├─ Regenerations: ${identity.regenerationCount}`);
-    console.log(`[IDENTITY]   └─ Attempts after regenerate: ${identity.attemptsAfterRegenerate}`);
+    // ✅ SEGURO: contadores apenas, sem dados da identidade completa
+    safeLog(`[IDENTITY] 💀 KILLING:`, {
+      id: identityId,
+      totalAttempts: identity.totalAttempts,
+      regenerationCount: identity.regenerationCount,
+      attemptsAfterRegenerate: identity.attemptsAfterRegenerate,
+    });
 
     identity.isAlive = false;
     await db.setIdentity(identityId, identity);
     await db.deleteIdentity(identityId);
 
-    console.log(`[IDENTITY] ☠️ KILLED: ${identityId}`);
+    safeLog(`[IDENTITY] ☠️ KILLED:`, { id: identityId });
     return true;
   } catch (error) {
-    console.error('[IDENTITY] ❌ Error killing identity:', error);
+    safeError('[IDENTITY] ❌ Error killing identity:', error);
     return false;
   }
 }
 
 /**
- * ✅ CORRIGIDO: Retorna identity com isValidSignature flag
- * ✅ NÃO incrementa attempts (isso é feito em identityRoutes.ts)
+ * ✅ Retorna identity com flag isValidSignature.
+ * ✅ NÃO incrementa attempts (feito em identityRoutes.ts).
+ * ✅ NUNCA loga privateKey ou o hash completo.
  */
 export async function validateIdentity(
-  identityId: string, 
+  identityId: string,
   privateKey: string
 ): Promise<(Identity & { isValidSignature: boolean }) | null> {
   try {
-    console.log(`[IDENTITY] ========================================`);
-    console.log(`[IDENTITY] 🔍 Validating: ${identityId}`);
-    
+    safeLog(`[IDENTITY] 🔍 Validating:`, { id: identityId });
+
     const identity = await db.getIdentity(identityId);
 
     if (!identity) {
-      console.log(`[IDENTITY] ❌ Not found: ${identityId}`);
+      safeLog(`[IDENTITY] ❌ Not found:`, { id: identityId });
       return null;
     }
 
-    console.log(`[IDENTITY] 📊 Current state:`);
-    console.log(`[IDENTITY]   ├─ isAlive: ${identity.isAlive}`);
-    console.log(`[IDENTITY]   ├─ attempts: ${identity.attempts}`);
-    console.log(`[IDENTITY]   ├─ totalAttempts: ${identity.totalAttempts || 0}`);
-    console.log(`[IDENTITY]   ├─ regenerations: ${identity.regenerationCount || 0}`);
-    console.log(`[IDENTITY]   └─ attemptsAfterRegenerate: ${identity.attemptsAfterRegenerate || 0}`);
+    // ✅ SEGURO: loga estado interno sem expor hashes completos
+    safeLog(`[IDENTITY] 📊 State:`, {
+      id: identityId,
+      isAlive: identity.isAlive,
+      attempts: identity.attempts,
+      totalAttempts: identity.totalAttempts || 0,
+      regenerationCount: identity.regenerationCount || 0,
+      attemptsAfterRegenerate: identity.attemptsAfterRegenerate || 0,
+    });
 
     if (!identity.isAlive) {
-      console.log(`[IDENTITY] ❌ Dead: ${identityId}`);
+      safeLog(`[IDENTITY] ❌ Dead:`, { id: identityId });
       return null;
     }
 
     if (identity.expiresAt < Date.now()) {
-      console.log(`[IDENTITY] ❌ Expired: ${identityId}`);
+      safeLog(`[IDENTITY] ❌ Expired:`, { id: identityId });
       await killIdentity(identityId);
       return null;
     }
 
-    // ✅ VALIDAÇÃO CRIPTOGRÁFICA
+    // ✅ VALIDAÇÃO CRIPTOGRÁFICA — hashes NUNCA vão para o log
     const providedHash = hashValue(privateKey);
-    const storedHash = identity.privateKeyHash;
-    const isValidSignature = providedHash === storedHash;
-    
-    console.log(`[IDENTITY] 🔑 Provided hash: ${providedHash.substring(0, 20)}...`);
-    console.log(`[IDENTITY] 🔑 Stored hash:   ${storedHash.substring(0, 20)}...`);
-    console.log(`[IDENTITY] 🔑 Hash match: ${isValidSignature}`);
+    const isValidSignature = providedHash === identity.privateKeyHash;
+
+    // ✅ SEGURO: loga apenas o resultado booleano, nunca o hash
+    safeLog(`[IDENTITY] 🔑 Hash match:`, { id: identityId, isValidSignature });
 
     if (!isValidSignature) {
-      console.log(`[IDENTITY] ❌ Wrong key for ${identityId}`);
-      console.log(`[IDENTITY] ⚠️ Returning identity with isValidSignature=false`);
-      console.log(`[IDENTITY] ⚠️ Routes will handle attempt increment`);
-      console.log(`[IDENTITY] ========================================`);
-      
-      // ✅ RETORNA IDENTITY COM FLAG FALSE (não incrementa attempts aqui!)
-      return {
-        ...identity,
-        isValidSignature: false
-      };
+      safeLog(`[IDENTITY] ❌ Wrong key:`, { id: identityId });
+      return { ...identity, isValidSignature: false };
     }
 
-    console.log(`[IDENTITY] ✅ Valid key for ${identityId}`);
-    console.log(`[IDENTITY] ========================================`);
-    
-    // ✅ RETORNA IDENTITY COM FLAG TRUE
-    return {
-      ...identity,
-      isValidSignature: true
-    };
+    safeLog(`[IDENTITY] ✅ Valid key:`, { id: identityId });
+    return { ...identity, isValidSignature: true };
   } catch (error) {
-    console.error('[IDENTITY] ❌ Error validating identity:', error);
+    safeError('[IDENTITY] ❌ Error validating identity:', error);
     return null;
   }
 }

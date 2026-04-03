@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { validateApiKey, checkRateLimit, incrementBlockedRequests, ApiKey } from '../services/apiKeyService';
+import { safeLog, safeError, safeWarn, sanitizeHeaders } from '../utils/sanitize';
 
 declare global {
   namespace Express {
@@ -11,9 +12,7 @@ declare global {
 }
 
 // ─────────────────────────────────────────────
-//  HONEYPOT CONFIG
-//  Keys "vazadas" propositalmente em repos/pastes.
-//  Quem usar entra em modo de coleta silenciosa.
+//  HONEYPOT KEYS
 // ─────────────────────────────────────────────
 const HONEYPOT_KEYS = new Set([
   'rkwy_live_honeypot_001',
@@ -21,28 +20,14 @@ const HONEYPOT_KEYS = new Set([
 ]);
 
 // ─────────────────────────────────────────────
-//  RESPOSTA NORMALIZADA — API key inválida
-//
-//  REGRA ABSOLUTA: resposta única, sem variação,
-//  sem campos extras, sem metadata.
-//
-//  Qualquer campo adicional é superfície de
-//  fingerprint. fakeMetadata pertence ao LIE
-//  layer (identidades), não ao layer de auth.
-//
-//  O atacante nunca deve distinguir:
-//  - key ausente
-//  - key inválida
-//  - key revogada
-//  - rate limit
-//  - erro interno
+//  RESPOSTA NORMALIZADA
+//  Sem variação entre: key ausente / inválida /
+//  revogada / rate limit / erro interno.
 // ─────────────────────────────────────────────
 const AUTH_FAIL = Object.freeze({ success: false, error: 'Unauthorized' });
 
 // ─────────────────────────────────────────────
-//  TIMING — jitter não-linear
-//  80–220ms, distribuição skewed (não uniforme).
-//  Elimina timing oracle sem pico fixo identificável.
+//  TIMING — jitter não-linear (80–220ms)
 // ─────────────────────────────────────────────
 function nonLinearJitter(): Promise<void> {
   const u1    = Math.random();
@@ -54,27 +39,28 @@ function nonLinearJitter(): Promise<void> {
 
 // ─────────────────────────────────────────────
 //  HONEYPOT — coleta silenciosa
-//  Simula sucesso, loga tudo do atacante.
-//  Nunca revela que é honeypot.
+//  NUNCA loga a key completa — apenas prefix
 // ─────────────────────────────────────────────
 function logHoneypotHit(req: Request, key: string) {
   const payload = {
-    event      : 'HONEYPOT_HIT',
-    ts         : new Date().toISOString(),
-    key,
-    ip         : req.ip || req.socket?.remoteAddress,
-    user_agent : req.headers['user-agent'],
-    method     : req.method,
-    path       : req.path,
-    query      : req.query,
-    headers    : {
-      origin      : req.headers['origin'],
-      referer     : req.headers['referer'],
-      accept_lang : req.headers['accept-language'],
-    },
+    event:      'HONEYPOT_HIT',
+    ts:         new Date().toISOString(),
+    // ✅ SEGURO: loga apenas prefixo da key (não o valor completo)
+    keyPrefix:  key.substring(0, 20) + '...',
+    ip:         req.ip || req.socket?.remoteAddress,
+    user_agent: req.headers['user-agent'],
+    method:     req.method,
+    path:       req.path,
+    query:      req.query,
+    // ✅ SEGURO: sanitiza headers antes de logar
+    headers:    sanitizeHeaders({
+      origin:      req.headers['origin'] || '',
+      referer:     req.headers['referer'] || '',
+      accept_lang: req.headers['accept-language'] || '',
+    }),
   };
   // Em produção: enviar para SIEM / Datadog / Sentry
-  console.warn('[HONEYPOT]', JSON.stringify(payload));
+  safeWarn('[HONEYPOT]', payload);
 }
 
 // ─────────────────────────────────────────────
@@ -94,12 +80,11 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
       apiKeyString = queryApiKey;
     }
 
-    // Key ausente → mesma resposta normalizada
     if (!apiKeyString) {
       return res.status(401).json(AUTH_FAIL);
     }
 
-    // Honeypot hit → simula sucesso, loga atacante
+    // Honeypot
     if (HONEYPOT_KEYS.has(apiKeyString)) {
       logHoneypotHit(req, apiKeyString);
       return res.status(200).json({ success: true });
@@ -107,7 +92,6 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
 
     const apiKey = await validateApiKey(apiKeyString);
 
-    // Key inválida / revogada → mesma resposta normalizada
     if (!apiKey) {
       if (apiKeyString.startsWith('rkwy_live_')) {
         await incrementBlockedRequests(apiKeyString).catch(() => {});
@@ -117,7 +101,6 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
 
     const rateLimitCheck = await checkRateLimit(apiKey, false);
 
-    // Rate limit → mesma resposta normalizada (não confirma que key existe)
     if (!rateLimitCheck.allowed) {
       return res.status(401).json(AUTH_FAIL);
     }
@@ -131,14 +114,14 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
     next();
 
   } catch (error) {
-    // Erro interno → mesma resposta normalizada, sem vazar stack
-    console.error('[AUTH] Error validating API key:', error);
+    // ✅ SEGURO: sanitize remove qualquer dado sensível do error
+    safeError('[AUTH] Error validating API key:', error);
     res.status(401).json(AUTH_FAIL);
   }
 }
 
 // ─────────────────────────────────────────────
-//  MIDDLEWARE DE IDENTIDADE
+//  MIDDLEWARE DE LIMITE DE IDENTIDADE
 // ─────────────────────────────────────────────
 export async function checkIdentityCreationLimit(req: Request, res: Response, next: NextFunction) {
   try {
@@ -161,7 +144,7 @@ export async function checkIdentityCreationLimit(req: Request, res: Response, ne
     next();
 
   } catch (error) {
-    console.error('[AUTH] Error checking identity limit:', error);
+    safeError('[AUTH] Error checking identity limit:', error);
     res.status(401).json(AUTH_FAIL);
   }
 }

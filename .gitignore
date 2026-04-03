@@ -85,3 +85,4 @@ ai-service/__pycache__/
 ai-service/*.pyc
 ai-service/model.pkl
 ai-service/scaler.pkl
+*.key\n*.pem\nprivate.*

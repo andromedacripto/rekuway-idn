@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { createIdentity, validateIdentity, killIdentity, regenerateIdentity } from '../services/identityService';
 import { defensiveResponse, detectThreatEvent } from '../services/defensiveService';
@@ -6,6 +5,7 @@ import { updateHeartbeat } from '../services/heartbeat';
 import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
 import { requireApiKey, checkIdentityCreationLimit } from '../middleware/auth';
+import { safeLog, safeError } from '../utils/sanitize';
 import paranoiaConfig from '../config/paranoia.json';
 import { extractFeatures, trackEndpoint } from '../services/featureExtraction';
 import { analyzeWithAI } from '../services/aiClient';
@@ -21,41 +21,43 @@ router.post('/new',
   requireApiKey,
   checkIdentityCreationLimit,
   async (req: Request, res: Response) => {
-  try {
-    const { paranoiaLevel = 'medium' } = req.body;
+    try {
+      const { paranoiaLevel = 'medium' } = req.body;
 
-    if (!['low', 'medium', 'high', 'deadman'].includes(paranoiaLevel)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid paranoia level. Must be: low, medium, high, or deadman'
+      if (!['low', 'medium', 'high', 'deadman'].includes(paranoiaLevel)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid paranoia level. Must be: low, medium, high, or deadman',
+        });
+      }
+
+      const result = await createIdentity(paranoiaLevel);
+
+      // ✅ privateKey vai APENAS na resposta HTTP desta rota — NUNCA em logs
+      res.json({
+        success:    true,
+        message:    '⚠️ SAVE YOUR PRIVATE KEY! It will never be shown again.',
+        identity: {
+          id:           result.identity.id,
+          publicKey:    result.identity.publicKey,
+          paranoiaLevel: result.identity.paranoiaLevel,
+          expiresAt:    result.identity.expiresAt,
+        },
+        privateKey: result.privateKey,
       });
+    } catch (error) {
+      safeError('[API] Error creating identity:', error);
+      res.status(500).json({ success: false, error: 'Failed to create identity' });
     }
-
-    const result = await createIdentity(paranoiaLevel);
-
-    // ✅ Expõe APENAS o necessário — sem estado interno
-    res.json({
-      success: true,
-      message: '⚠️ SAVE YOUR PRIVATE KEY! It will never be shown again.',
-      identity: {
-        id:           result.identity.id,
-        publicKey:    result.identity.publicKey,
-        paranoiaLevel: result.identity.paranoiaLevel,
-        expiresAt:    result.identity.expiresAt,
-      },
-      privateKey: result.privateKey,
-    });
-  } catch (error) {
-    console.error('[API] Error creating identity:', error);
-    res.status(500).json({ success: false, error: 'Failed to create identity' });
   }
-});
+);
 
 // ─────────────────────────────────────────────
 //  POST /identity/check
 // ─────────────────────────────────────────────
 router.post('/check', async (req: Request, res: Response) => {
   try {
+    // ✅ SEGURO: privateKey extraída do body mas JAMAIS logada
     const { identityId, privateKey } = req.body;
     const clientIP  = req.ip || req.connection.remoteAddress || 'unknown';
     const userAgent = req.headers['user-agent'] || '';
@@ -88,15 +90,15 @@ router.post('/check', async (req: Request, res: Response) => {
 
     const config = paranoiaConfig[identity.paranoiaLevel];
 
-    if (typeof identity.totalAttempts         === 'undefined') identity.totalAttempts         = identity.attempts;
-    if (typeof identity.regenerationCount     === 'undefined') identity.regenerationCount     = 0;
+    if (typeof identity.totalAttempts          === 'undefined') identity.totalAttempts          = identity.attempts;
+    if (typeof identity.regenerationCount      === 'undefined') identity.regenerationCount      = 0;
     if (typeof identity.attemptsAfterRegenerate === 'undefined') identity.attemptsAfterRegenerate = 0;
 
-    const features       = await extractFeatures(identity, clientIP, userAgent);
+    const features        = await extractFeatures(identity, clientIP, userAgent);
     await trackEndpoint(identityId, 'check');
-    const aiAnalysis     = await analyzeWithAI(features);
+    const aiAnalysis      = await analyzeWithAI(features);
     const railwayFeatures = convertToRailwayFeatures(features);
-    const railwayAI      = await analyzeWithRailwayAI(railwayFeatures);
+    const railwayAI       = await analyzeWithRailwayAI(railwayFeatures);
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
@@ -105,18 +107,17 @@ router.post('/check', async (req: Request, res: Response) => {
 
     const isValidSignature = validatedIdentity.isValidSignature;
 
-    // ── ALLOWED (assinatura válida) ───────────────────────────
+    // ── ALLOWED ──────────────────────────────────────────────
     if (isValidSignature === true) {
       if (identity.paranoiaLevel === 'deadman') {
         const now = Date.now();
         identity.lastHeartbeat = now;
         identity.lastCheckIn   = now;
       }
-      identity.attempts               = 0;
+      identity.attempts                = 0;
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
 
-      // ✅ Sem contadores, sem estado interno
       return res.json({
         success: true,
         action:  'ALLOWED',
@@ -129,7 +130,7 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ── Falha de validação — atualiza contadores internamente ─
+    // ── Falha de validação ────────────────────────────────────
     identity = await db.getIdentity(identityId);
     if (!identity) return res.status(404).json({ success: false, error: 'Identity not found' });
 
@@ -142,12 +143,10 @@ router.post('/check', async (req: Request, res: Response) => {
     await db.set(`identity:${identityId}`, identity);
 
     let ruleBasedAction: DefensiveAction = DefensiveAction.ALLOW;
-    let killReason = '';
 
     if (identity.regenerationCount > 0) {
       if (identity.attemptsAfterRegenerate >= 2) {
         ruleBasedAction = DefensiveAction.KILL;
-        killReason = `2nd failed attempt after regeneration (${identity.attemptsAfterRegenerate}/2)`;
       }
     }
     if (ruleBasedAction === DefensiveAction.ALLOW &&
@@ -163,11 +162,11 @@ router.post('/check', async (req: Request, res: Response) => {
 
     const decisionContext: DecisionContext = {
       ruleBasedAction,
-      aiRecommendation:    aiAnalysis?.riskAnalysis.recommendedAction || null,
+      aiRecommendation:     aiAnalysis?.riskAnalysis.recommendedAction || null,
       validationSuccessful: false,
-      threatScore:         aiAnalysis?.riskAnalysis.threatScore || 0,
-      confidence:          aiAnalysis?.riskAnalysis.confidence || 'low',
-      topFactors:          aiAnalysis?.riskAnalysis.topFactors || [],
+      threatScore:          aiAnalysis?.riskAnalysis.threatScore || 0,
+      confidence:           aiAnalysis?.riskAnalysis.confidence || 'low',
+      topFactors:           aiAnalysis?.riskAnalysis.topFactors || [],
       identityId,
     };
 
@@ -177,17 +176,11 @@ router.post('/check', async (req: Request, res: Response) => {
     // ── KILL ─────────────────────────────────────────────────
     if (finalAction === DefensiveAction.KILL) {
       await killIdentity(identityId);
-      // ✅ Sem detalhes de contadores
-      return res.status(403).json({
-        success: false,
-        action:  'KILLED',
-        error:   'Identity destroyed',
-      });
+      return res.status(403).json({ success: false, action: 'KILLED', error: 'Identity destroyed' });
     }
 
     // ── LIE ──────────────────────────────────────────────────
     if (finalAction === DefensiveAction.LIE) {
-      // ✅ Retorna fake sem revelar que é LIE nem aviso de próxima ação
       return res.status(401).json({
         success: false,
         action:  'ALLOWED',
@@ -210,7 +203,7 @@ router.post('/check', async (req: Request, res: Response) => {
       newIdentity.attemptsAfterRegenerate  = 0;
       await db.set(`identity:${newIdentity.id}`, newIdentity);
 
-      // ✅ Sem contadores, sem warning de próxima camada
+      // ✅ privateKey retornada na resposta — NUNCA em logs
       return res.json({
         success: true,
         action:  'REGENERATE',
@@ -224,8 +217,7 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ── ALLOW (falha simples) ────────────────────────────────
-    // ✅ Sem contadores, sem "X tentativas restantes"
+    // ── ALLOW (falha simples) ─────────────────────────────────
     return res.status(401).json({
       success: false,
       action:  'ALLOWED',
@@ -233,7 +225,7 @@ router.post('/check', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('[API] ❌ Error:', error);
+    safeError('[API] ❌ Error in /check:', error);
     res.status(500).json({ success: false, error: 'Failed to check identity' });
   }
 });
@@ -271,13 +263,12 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
       return res.status(500).json({ success: false, error: 'Failed to update heartbeat' });
     }
 
-    const config      = paranoiaConfig.deadman;
-    const now         = Date.now();
+    const config       = paranoiaConfig.deadman;
+    const now          = Date.now();
     const nextDeadline = now + ((config.deadmanTimer || 60) * 1000);
 
-    // ✅ Sem estado interno além do necessário pro cliente operar
     res.json({
-      success:  true,
+      success: true,
       identity: {
         id:              identity.id,
         paranoiaLevel:   identity.paranoiaLevel,
@@ -287,7 +278,7 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('[API] Error in /heartbeat:', error);
+    safeError('[API] Error in /heartbeat:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -315,7 +306,7 @@ router.post('/regenerate', async (req: Request, res: Response) => {
       return res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
     }
 
-    // ✅ Só expõe o mínimo pra o cliente usar a nova identidade
+    // ✅ privateKey retornada na resposta — NUNCA em logs
     res.json({
       success: true,
       identity: {
@@ -328,7 +319,7 @@ router.post('/regenerate', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('[API] Error regenerating:', error);
+    safeError('[API] Error regenerating:', error);
     res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
   }
 });
@@ -359,7 +350,7 @@ router.post('/kill', async (req: Request, res: Response) => {
     res.json({ success: true });
 
   } catch (error) {
-    console.error('[API] Error killing:', error);
+    safeError('[API] Error killing:', error);
     res.status(500).json({ success: false, error: 'Failed to destroy identity' });
   }
 });
@@ -369,15 +360,13 @@ router.post('/kill', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
-    const { id }    = req.params;
-    const identity  = await db.getIdentity(id);
+    const { id }   = req.params;
+    const identity = await db.getIdentity(id);
 
     if (!identity || !identity.isAlive) {
-      // ✅ Não confirma se existiu — só diz que não está disponível
       return res.status(404).json({ exists: false });
     }
 
-    // ✅ Sem contadores internos, sem regenerationCount, sem attemptsAfterRegenerate
     res.json({
       exists:       true,
       paranoiaLevel: identity.paranoiaLevel,
@@ -385,7 +374,7 @@ router.get('/status/:id', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('[API] Error checking status:', error);
+    safeError('[API] Error checking status:', error);
     res.status(500).json({ success: false, error: 'Failed to check status' });
   }
 });
