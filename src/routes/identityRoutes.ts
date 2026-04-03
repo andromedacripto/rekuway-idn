@@ -68,12 +68,8 @@ router.post('/check', async (req: Request, res: Response) => {
 
     let identity = await db.getIdentity(identityId);
 
-    if (!identity) {
-      return res.status(404).json({ success: false, error: 'Identity not found' });
-    }
-
-    if (!identity.isAlive) {
-      return res.status(403).json({ success: false, action: 'KILLED', error: 'Identity was previously destroyed' });
+    if (!identity || !identity.isAlive) {
+      return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
     }
 
     if (identity.paranoiaLevel === 'deadman') {
@@ -102,7 +98,7 @@ router.post('/check', async (req: Request, res: Response) => {
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
-      return res.status(404).json({ success: false, error: 'Identity not found or expired' });
+      return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
     }
 
     const isValidSignature = validatedIdentity.isValidSignature;
@@ -131,9 +127,11 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     // ── Falha de validação ────────────────────────────────────
+    // FIX: reler do DB após validateIdentity para garantir estado fresco
     identity = await db.getIdentity(identityId);
-    if (!identity) return res.status(404).json({ success: false, error: 'Identity not found' });
+    if (!identity) return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
 
+    // FIX: incrementar ANTES de avaliar as regras
     identity.attempts               = (identity.attempts || 0) + 1;
     identity.totalAttempts          = (identity.totalAttempts || 0) + 1;
     identity.lastAttemptAt          = Date.now();
@@ -142,36 +140,32 @@ router.post('/check', async (req: Request, res: Response) => {
     }
     await db.set(`identity:${identityId}`, identity);
 
+    // FIX: regras em ordem de prioridade, sem if/else solto
     let ruleBasedAction: DefensiveAction = DefensiveAction.ALLOW;
 
     if (identity.regenerationCount > 0) {
       if (identity.attemptsAfterRegenerate >= 2) {
         ruleBasedAction = DefensiveAction.KILL;
+      } else if (identity.attemptsAfterRegenerate === 1) {
+        ruleBasedAction = DefensiveAction.LIE;
       }
-    }
-    if (ruleBasedAction === DefensiveAction.ALLOW &&
-        identity.regenerationCount > 0 &&
-        identity.attemptsAfterRegenerate === 1) {
-      ruleBasedAction = DefensiveAction.LIE;
-    }
-    if (ruleBasedAction === DefensiveAction.ALLOW &&
-        identity.regenerationCount === 0 &&
-        identity.attempts > config.regenerateThreshold) {
+    } else if (identity.attempts > config.regenerateThreshold) {
       ruleBasedAction = DefensiveAction.REGENERATE;
     }
 
-    const decisionContext: DecisionContext = {
-      ruleBasedAction,
-      aiRecommendation:     aiAnalysis?.riskAnalysis.recommendedAction || null,
-      validationSuccessful: false,
-      threatScore:          aiAnalysis?.riskAnalysis.threatScore || 0,
-      confidence:           aiAnalysis?.riskAnalysis.confidence || 'low',
-      topFactors:           aiAnalysis?.riskAnalysis.topFactors || [],
-      identityId,
+    // FIX: AI só pode AGRAVAR, nunca suavizar a regra local
+    // Hierarquia: KILL > LIE > REGENERATE > ALLOW
+    const actionPriority: Record<DefensiveAction, number> = {
+      [DefensiveAction.KILL]:       4,
+      [DefensiveAction.LIE]:        3,
+      [DefensiveAction.REGENERATE]: 2,
+      [DefensiveAction.ALLOW]:      1,
     };
 
-    const decisionResult = await combineDecisionsV3(decisionContext);
-    const finalAction    = decisionResult.action;
+    const aiRecommendation = aiAnalysis?.riskAnalysis.recommendedAction || DefensiveAction.ALLOW;
+    const finalAction = actionPriority[aiRecommendation] > actionPriority[ruleBasedAction]
+      ? aiRecommendation
+      : ruleBasedAction;
 
     // ── KILL ─────────────────────────────────────────────────
     if (finalAction === DefensiveAction.KILL) {
@@ -180,6 +174,7 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     // ── LIE ──────────────────────────────────────────────────
+    // intencional: engana o atacante retornando ALLOWED com falha
     if (finalAction === DefensiveAction.LIE) {
       return res.status(401).json({
         success: false,
@@ -244,7 +239,7 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
     const identity = await db.getIdentity(identityId);
 
     if (!identity || !identity.isAlive) {
-      return res.status(404).json({ success: false, error: 'Identity not found or already destroyed' });
+      return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
     }
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
@@ -254,7 +249,7 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
     }
 
     if (identity.paranoiaLevel !== 'deadman') {
-      return res.status(400).json({ success: false, error: 'Heartbeat only available for DEADMAN level identities' });
+      return res.status(400).json({ success: false, error: 'Invalid request' });
     }
 
     const updated = await updateHeartbeat(identityId);
