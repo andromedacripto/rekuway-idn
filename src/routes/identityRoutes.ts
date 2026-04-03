@@ -149,7 +149,7 @@ router.post('/check', async (req: Request, res: Response) => {
       } else if (identity.attemptsAfterRegenerate === 1) {
         ruleBasedAction = DefensiveAction.LIE;
       }
-    } else if (identity.attempts > config.regenerateThreshold) {
+    } else if (identity.attempts >= config.regenerateThreshold) {
       ruleBasedAction = DefensiveAction.REGENERATE;
     }
 
