@@ -15,6 +15,55 @@ import { analyzeWithRailwayAI, convertToRailwayFeatures } from '../services/rail
 const router = Router();
 
 // ─────────────────────────────────────────────
+//  TOKEN ENCODING — Stealth Credential Layer
+//  Empacota id + privateKey num token opaco.
+//  Para o atacante parece um token comum.
+//  Para o cliente legítimo é decodificável.
+// ─────────────────────────────────────────────
+
+/**
+ * Codifica id + privateKey num token base64url opaco.
+ *
+ * Formato interno (nunca documentado publicamente):
+ *   base64url({ i: identityId, k: privateKey, t: timestamp, v: 1 })
+ *
+ * Para o atacante parece um token JWT comum.
+ * Para o cliente legítimo é decodificável com qualquer base64 decoder.
+ *
+ * NUNCA logar o resultado desta função.
+ */
+function encodeCredentialToken(identityId: string, privateKey: string): string {
+  const payload = JSON.stringify({
+    i: identityId,
+    k: privateKey,
+    t: Date.now(),
+    v: 1,
+  });
+  return Buffer.from(payload).toString('base64url');
+}
+
+/**
+ * Decodifica o token de credencial.
+ * Exportada para uso nos clientes legítimos (GLPI, Zabbix, Mautic, etc).
+ * Retorna null se o token for inválido.
+ *
+ * Uso no cliente:
+ *   const { identityId, privateKey } = decodeCredentialToken(token);
+ */
+export function decodeCredentialToken(token: string): {
+  identityId: string;
+  privateKey: string;
+} | null {
+  try {
+    const decoded = JSON.parse(Buffer.from(token, 'base64url').toString('utf8'));
+    if (!decoded.i || !decoded.k) return null;
+    return { identityId: decoded.i, privateKey: decoded.k };
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────
 //  STEALTH LAYER
 //  Camada de ofuscação de respostas HTTP.
 //  Nenhuma lógica interna deve vazar para o cliente.
@@ -51,9 +100,6 @@ function randomFailureStatus(): number {
  *  1. Dificulta ataques de timing (timing oracle)
  *  2. Aumenta o custo de brute-force automatizado
  *  3. Mascara diferenças de tempo entre KILL, LIE e ALLOW
- *
- * @param minMs Mínimo em ms (padrão: 200)
- * @param maxMs Máximo em ms (padrão: 1000)
  */
 async function stealthDelay(minMs = 200, maxMs = 1000): Promise<void> {
   const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
@@ -63,23 +109,14 @@ async function stealthDelay(minMs = 200, maxMs = 1000): Promise<void> {
 /**
  * Envia a resposta stealth de falha.
  * Centraliza o envio para garantir consistência em TODOS os casos de erro.
- *
- * @param res       Objeto Response do Express
- * @param action    Ação interna (apenas para log — NUNCA vai para o cliente)
- * @param identityId ID da identidade (mascarado no log)
  */
 async function sendStealthFailure(
   res: Response,
   action: DefensiveAction | 'INVALID_BODY' | 'NOT_FOUND' | 'DEADMAN_EXPIRED',
   identityId?: string
 ): Promise<void> {
-  // Log interno seguro — registra o que realmente aconteceu
   safeLog(`[DEFENSE] ${action} triggered`, { identityId });
-
-  // Delay antes de responder — mitiga timing attacks
   await stealthDelay();
-
-  // Resposta pública: sempre idêntica, independente da ação
   res.status(randomFailureStatus()).json(STEALTH_FAILURE);
 }
 
@@ -102,18 +139,21 @@ router.post('/new',
 
       const result = await createIdentity(paranoiaLevel);
 
-      // ✅ privateKey vai APENAS na resposta HTTP desta rota — NUNCA em logs
+      // ✅ STEALTH: token opaco — parece um token comum
+      // id + privateKey empacotados em base64url — nunca expostos separadamente
+      // O atacante não consegue identificar que é um sistema de chaves RSA
+      const credentialToken = encodeCredentialToken(
+        result.identity.id,
+        result.privateKey
+      );
+
       res.json({
-        success:  true,
-        message:  '⚠️ SAVE YOUR PRIVATE KEY! It will never be shown again.',
-        identity: {
-          id:            result.identity.id,
-          publicKey:     result.identity.publicKey,
-          paranoiaLevel: result.identity.paranoiaLevel,
-          expiresAt:     result.identity.expiresAt,
-        },
-        privateKey: result.privateKey,
+        success: true,
+        token:   credentialToken,   // contém id + privateKey codificados
+        exp:     result.identity.expiresAt,
+        lvl:     result.identity.paranoiaLevel,
       });
+
     } catch (error) {
       safeError('[API] Error creating identity:', error);
       res.status(500).json({ success: false, error: 'Failed to create identity' });
@@ -131,17 +171,12 @@ router.post('/check', async (req: Request, res: Response) => {
     const clientIP  = req.ip || req.connection.remoteAddress || 'unknown';
     const userAgent = req.headers['user-agent'] || '';
 
-    // ── Validação de entrada ─────────────────────────────────
     if (!identityId || !privateKey) {
-      // Sem delay aqui — falha antes mesmo de consultar o DB
-      // Qualquer bot saberá que está faltando campo — não há segredo
       return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
     }
 
-    // ── Busca identidade no DB ───────────────────────────────
     let identity = await db.getIdentity(identityId);
 
-    // Identidade inexistente ou morta → stealth (pode ser KILL anterior)
     if (!identity || !identity.isAlive) {
       await sendStealthFailure(res, 'NOT_FOUND', identityId);
       return;
@@ -156,7 +191,6 @@ router.post('/check', async (req: Request, res: Response) => {
 
       if (timeSince > deadmanTimerMs) {
         await killIdentity(identityId);
-        // ⚠️ STEALTH: não revela que foi DEADMAN_EXPIRED — apenas falha genérica
         await sendStealthFailure(res, 'DEADMAN_EXPIRED', identityId);
         return;
       }
@@ -164,18 +198,16 @@ router.post('/check', async (req: Request, res: Response) => {
 
     const config = paranoiaConfig[identity.paranoiaLevel];
 
-    // Inicializa contadores ausentes (compatibilidade retroativa)
     if (typeof identity.totalAttempts           === 'undefined') identity.totalAttempts           = identity.attempts;
     if (typeof identity.regenerationCount       === 'undefined') identity.regenerationCount       = 0;
     if (typeof identity.attemptsAfterRegenerate === 'undefined') identity.attemptsAfterRegenerate = 0;
 
     // ── Feature extraction + AI analysis ────────────────────
-    // Mantém toda a lógica adaptativa existente intacta
-    const features        = await extractFeatures(identity, clientIP, userAgent);
+    const features          = await extractFeatures(identity, clientIP, userAgent);
     await trackEndpoint(identityId, 'check');
-    const aiAnalysis      = await analyzeWithAI(features);
-    const railwayFeatures = convertToRailwayFeatures(features);
-    const railwayAI       = await analyzeWithRailwayAI(railwayFeatures);
+    const aiAnalysis        = await analyzeWithAI(features);
+    const railwayFeatures   = convertToRailwayFeatures(features);
+    const railwayAI         = await analyzeWithRailwayAI(railwayFeatures);
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
@@ -186,7 +218,6 @@ router.post('/check', async (req: Request, res: Response) => {
     const isValidSignature = validatedIdentity.isValidSignature;
 
     // ── ALLOWED (assinatura válida) ──────────────────────────
-    // Único caso que retorna dados reais — sem stealth necessário
     if (isValidSignature === true) {
       if (identity.paranoiaLevel === 'deadman') {
         const now = Date.now();
@@ -197,7 +228,6 @@ router.post('/check', async (req: Request, res: Response) => {
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
 
-      // ✅ Sucesso: retorna dados reais sem delay
       return res.json({
         success:  true,
         action:   'ALLOWED',
@@ -211,15 +241,12 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     // ── Falha de validação → avalia ação defensiva ───────────
-
-    // FIX: reler do DB após validateIdentity para garantir estado fresco
     identity = await db.getIdentity(identityId);
     if (!identity) {
       await sendStealthFailure(res, 'NOT_FOUND', identityId);
       return;
     }
 
-    // FIX: incrementa ANTES de avaliar as regras
     identity.attempts               = (identity.attempts || 0) + 1;
     identity.totalAttempts          = (identity.totalAttempts || 0) + 1;
     identity.lastAttemptAt          = Date.now();
@@ -228,7 +255,6 @@ router.post('/check', async (req: Request, res: Response) => {
     }
     await db.set(`identity:${identityId}`, identity);
 
-    // FIX: regras em ordem de prioridade, sem if/else solto
     let ruleBasedAction: DefensiveAction = DefensiveAction.ALLOW;
 
     if (identity.regenerationCount > 0) {
@@ -241,8 +267,6 @@ router.post('/check', async (req: Request, res: Response) => {
       ruleBasedAction = DefensiveAction.REGENERATE;
     }
 
-    // FIX: AI só pode AGRAVAR, nunca suavizar a regra local
-    // Hierarquia: KILL > LIE > REGENERATE > ALLOW
     const actionPriority: Record<DefensiveAction, number> = {
       [DefensiveAction.KILL]:       4,
       [DefensiveAction.LIE]:        3,
@@ -256,31 +280,19 @@ router.post('/check', async (req: Request, res: Response) => {
       : ruleBasedAction;
 
     // ── KILL ─────────────────────────────────────────────────
-    // Lógica: destrói identidade
-    // Resposta externa: genérica (stealth)
     if (finalAction === DefensiveAction.KILL) {
       await killIdentity(identityId);
-      // ⚠️ STEALTH: não retorna { action: "KILLED" }
       await sendStealthFailure(res, DefensiveAction.KILL, identityId);
       return;
     }
 
     // ── LIE ──────────────────────────────────────────────────
-    // Lógica: engana o atacante (retorna falha genérica idêntica)
-    // NOTA: no código original, LIE retornava { action: 'ALLOWED' }
-    // Com stealth: retorna STEALTH_FAILURE com delay — mesma aparência que ALLOW
-    // O atacante não consegue distinguir LIE de ALLOW
     if (finalAction === DefensiveAction.LIE) {
-      // ⚠️ STEALTH: não retorna { action: "LIE" } nem { action: "ALLOWED" }
-      // O delay já está dentro de sendStealthFailure
       await sendStealthFailure(res, DefensiveAction.LIE, identityId);
       return;
     }
 
     // ── REGENERATE ───────────────────────────────────────────
-    // Lógica: destrói identidade atual e cria nova
-    // Resposta externa: genérica (stealth) — nova identidade NÃO é retornada
-    // O sistema legítimo deve usar /identity/new para obter nova identidade
     if (finalAction === DefensiveAction.REGENERATE) {
       await killIdentity(identityId);
       const newIdentityResult = await createIdentity(identity.paranoiaLevel);
@@ -291,15 +303,12 @@ router.post('/check', async (req: Request, res: Response) => {
         return res.status(randomFailureStatus()).json(STEALTH_FAILURE);
       }
 
-      // Propaga contadores para a nova identidade
       const newIdentity                   = newIdentityResult.identity;
       newIdentity.totalAttempts           = identity.totalAttempts;
       newIdentity.regenerationCount       = (identity.regenerationCount || 0) + 1;
       newIdentity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${newIdentity.id}`, newIdentity);
 
-      // ⚠️ STEALTH: NÃO retorna { action: "REGENERATE" } nem a nova privateKey
-      // Log interno registra o novo ID de forma segura
       safeLog('[DEFENSE] REGENERATE triggered — new identity created', {
         oldId: identityId,
         newId: newIdentity.id,
@@ -310,14 +319,10 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     // ── ALLOW (falha simples) ─────────────────────────────────
-    // Chave inválida mas sem threshold atingido — falha normal
-    // ⚠️ STEALTH: não retorna { action: "ALLOWED" }
     await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
 
   } catch (error) {
     safeError('[API] ❌ Error in /check:', error);
-    // Erro interno: sem delay (já custou tempo no processamento)
-    // Status 500 para erros genuínos — não mascarar bugs como falha de auth
     res.status(500).json({ success: false, error: 'Failed to check identity' });
   }
 });
@@ -398,16 +403,17 @@ router.post('/regenerate', async (req: Request, res: Response) => {
       return res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
     }
 
-    // ✅ privateKey retornada na resposta — NUNCA em logs
+    // ✅ STEALTH: token opaco — mesmo padrão do /identity/new
+    const credentialToken = encodeCredentialToken(
+      newIdentity.identity.id,
+      newIdentity.privateKey
+    );
+
     res.json({
-      success:  true,
-      identity: {
-        id:            newIdentity.identity.id,
-        publicKey:     newIdentity.identity.publicKey,
-        paranoiaLevel: newIdentity.identity.paranoiaLevel,
-        expiresAt:     newIdentity.identity.expiresAt,
-      },
-      privateKey: newIdentity.privateKey,
+      success: true,
+      token:   credentialToken,
+      exp:     newIdentity.identity.expiresAt,
+      lvl:     newIdentity.identity.paranoiaLevel,
     });
 
   } catch (error) {
