@@ -141,6 +141,15 @@ export async function checkIdentityCreationLimit(req: Request, res: Response, ne
     res.setHeader('X-Identities-Remaining', rateLimitCheck.limits.identitiesRemaining.toString());
     res.setHeader('X-Identities-Reset',     new Date(apiKey.usage.resetDate).toISOString());
 
+    // ✅ Incrementa usageCount no dashboard (fire and forget)
+    const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway.xyz'
+    fetch(`${dashUrl}/api/keys/usage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+      body: JSON.stringify({ userId: apiKey.userId }),
+      signal: AbortSignal.timeout(3000)
+    }).catch(() => {})
+
     next();
 
   } catch (error) {
