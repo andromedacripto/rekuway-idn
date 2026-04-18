@@ -314,6 +314,15 @@ router.post('/check', async (req: Request, res: Response) => {
         newId: newIdentity.id,
       });
 
+      // ✅ Callback para dashboard registrar rotação
+      const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
+      fetch(`${dashUrl}/api/keys/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+        body: JSON.stringify({ userId: req.apiKey?.userId, type: 'IDENTITY_ROTATION', severity: 'MEDIUM', description: `Identity rotated: ${identityId} → ${newIdentity.id}`, blocked: false }),
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => {})
+
       await sendStealthFailure(res, DefensiveAction.REGENERATE, identityId);
       return;
     }
