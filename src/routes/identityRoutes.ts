@@ -323,6 +323,7 @@ router.post('/check', async (req: Request, res: Response) => {
       newIdentity.totalAttempts           = identity.totalAttempts;
       newIdentity.regenerationCount       = (identity.regenerationCount || 0) + 1;
       newIdentity.attemptsAfterRegenerate = 0;
+      newIdentity.userId                  = identity.userId;
       await db.set(`identity:${newIdentity.id}`, newIdentity);
 
       safeLog('[DEFENSE] REGENERATE triggered — new identity created', {
