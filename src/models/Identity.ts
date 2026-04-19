@@ -6,6 +6,7 @@
 
 export interface Identity {
   id: string;
+  userId?: string; // ID do usuário dono da identidade
   publicKey: string;
   privateKeyHash: string;
   privateKey?: string; // Só existe na criação

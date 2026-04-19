@@ -138,6 +138,15 @@ router.post('/new',
       }
 
       const result = await createIdentity(paranoiaLevel);
+      // ✅ Salvar userId na identidade para rastreamento
+      if (req.apiKey?.userId) {
+        const { db } = await import('../config/database');
+        const stored = await db.getIdentity(result.identity.id);
+        if (stored) {
+          stored.userId = req.apiKey.userId;
+          await db.set(`identity:${result.identity.id}`, stored);
+        }
+      }
 
       // ✅ STEALTH: token opaco — parece um token comum
       // id + privateKey empacotados em base64url — nunca expostos separadamente
@@ -319,7 +328,7 @@ router.post('/check', async (req: Request, res: Response) => {
       fetch(`${dashUrl}/api/keys/event`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
-        body: JSON.stringify({ userId: req.apiKey?.userId, type: 'IDENTITY_ROTATION', severity: 'MEDIUM', description: `Identity rotated: ${identityId} → ${newIdentity.id}`, blocked: false }),
+        body: JSON.stringify({ userId: identity.userId || req.apiKey?.userId, type: 'IDENTITY_ROTATION', severity: 'MEDIUM', description: `Identity rotated: ${identityId} → ${newIdentity.id}`, blocked: false }),
         signal: AbortSignal.timeout(3000)
       }).catch(() => {})
 
