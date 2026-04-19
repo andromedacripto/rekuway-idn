@@ -291,6 +291,13 @@ router.post('/check', async (req: Request, res: Response) => {
     // ── KILL ─────────────────────────────────────────────────
     if (finalAction === DefensiveAction.KILL) {
       await killIdentity(identityId);
+      const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
+      fetch(`${dashUrl}/api/keys/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+        body: JSON.stringify({ userId: identity.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Identity KILLED after attacks: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent }),
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => {})
       await sendStealthFailure(res, DefensiveAction.KILL, identityId);
       return;
     }
