@@ -200,7 +200,8 @@ router.post('/check', async (req: Request, res: Response) => {
 
       if (timeSince > deadmanTimerMs) {
         await killIdentity(identityId);
-        await sendStealthFailure(res, 'DEADMAN_EXPIRED', identityId);
+      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Deadman timer expired — identity killed: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
+      await sendStealthFailure(res, 'DEADMAN_EXPIRED', identityId);
         return;
       }
     }
@@ -220,6 +221,7 @@ router.post('/check', async (req: Request, res: Response) => {
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
+      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Invalid private key attempt on identity: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
       await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
       return;
     }
@@ -304,6 +306,7 @@ router.post('/check', async (req: Request, res: Response) => {
 
     // ── LIE ──────────────────────────────────────────────────
     if (finalAction === DefensiveAction.LIE) {
+      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Attack deceived [LIE] on identity: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
       await sendStealthFailure(res, DefensiveAction.LIE, identityId);
       return;
     }
@@ -345,6 +348,7 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     // ── ALLOW (falha simples) ─────────────────────────────────
+    { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'MEDIUM', description: `Failed attempt [ALLOW] on identity: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
     await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
 
   } catch (error) {
