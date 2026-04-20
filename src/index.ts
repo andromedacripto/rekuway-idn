@@ -27,25 +27,29 @@ app.use((req, res, next) => {
 
 app.use(cors());
 
-// ── Rate Limiting Global por IP ───────────────────────────────
-const _rlMap = new Map<string, { count: number; resetAt: number }>()
+// ── Rate Limiting Global por IP (Redis) ─────────────────────
+import { Redis } from '@upstash/redis'
+const _redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+})
 const _RL_MAX = 10
-const _RL_WIN = 60_000
+const _RL_WIN = 60
 
-app.use((req: any, res: any, next: any) => {
-  const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
-    .toString().split(',')[0].trim()
-  const now = Date.now()
-  const entry = _rlMap.get(ip)
-  if (!entry || now > entry.resetAt) {
-    _rlMap.set(ip, { count: 1, resetAt: now + _RL_WIN })
-    return next()
+app.use(async (req: any, res: any, next: any) => {
+  try {
+    const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+      .toString().split(',')[0].trim()
+    const key = `rl:${ip}`
+    const count = await _redis.incr(key)
+    if (count === 1) await _redis.expire(key, _RL_WIN)
+    if (count > _RL_MAX) {
+      return res.status(429).json({ success: false, error: 'Too many requests' })
+    }
+    next()
+  } catch {
+    next() // Se Redis falhar, deixa passar (fail-open)
   }
-  if (entry.count >= _RL_MAX) {
-    return res.status(429).json({ success: false, error: 'Too many requests' })
-  }
-  entry.count++
-  next()
 })
 
 app.use(express.json());
