@@ -14,6 +14,24 @@ import { analyzeWithRailwayAI, convertToRailwayFeatures } from '../services/rail
 
 const router = Router();
 
+// ── Rate Limiting por IP ──────────────────────────────────────
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+const RATE_LIMIT_MAX = 10
+const RATE_LIMIT_WINDOW_MS = 60_000
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now()
+  const entry = rateLimitMap.get(ip)
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
+    return true
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false
+  entry.count++
+  return true
+}
+
+
 // ─────────────────────────────────────────────
 //  TOKEN ENCODING — Stealth Credential Layer
 //  Empacota id + privateKey num token opaco.
@@ -174,6 +192,10 @@ router.post('/new',
 //  POST /identity/check  (STEALTH REFACTORED)
 // ─────────────────────────────────────────────
 router.post('/check', async (req: Request, res: Response) => {
+    const clientIP = req.headers['x-forwarded-for']?.toString().split(',')[0] || req.socket.remoteAddress || 'unknown'
+    if (!checkRateLimit(clientIP)) {
+      return res.status(429).json({ success: false, error: 'Too many requests' })
+    }
   try {
     // ✅ SEGURO: privateKey extraída do body mas JAMAIS logada
     const { identityId, privateKey } = req.body;
