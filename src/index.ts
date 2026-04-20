@@ -26,6 +26,28 @@ app.use((req, res, next) => {
 });
 
 app.use(cors());
+
+// ── Rate Limiting Global por IP ───────────────────────────────
+const _rlMap = new Map<string, { count: number; resetAt: number }>()
+const _RL_MAX = 10
+const _RL_WIN = 60_000
+
+app.use((req: any, res: any, next: any) => {
+  const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+    .toString().split(',')[0].trim()
+  const now = Date.now()
+  const entry = _rlMap.get(ip)
+  if (!entry || now > entry.resetAt) {
+    _rlMap.set(ip, { count: 1, resetAt: now + _RL_WIN })
+    return next()
+  }
+  if (entry.count >= _RL_MAX) {
+    return res.status(429).json({ success: false, error: 'Too many requests' })
+  }
+  entry.count++
+  next()
+})
+
 app.use(express.json());
 
 // ── Health check — sem informação útil ───────────────────────
