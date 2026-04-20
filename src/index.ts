@@ -1,7 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import identityRoutes from './routes/identityRoutes';
+import identityRoutes from './routes/identityRoutes'
+import internalRoutes from './routes/internalRoutes';
 import verifyIdentityRouter from './routes/verify-identity';
 import apiKeyRoutes from './routes/apiKeyRoutes';
 import { requireApiKey } from './middleware/auth';
@@ -67,7 +68,8 @@ app.get('/health', (req, res) => {
 
 // ── Routes ────────────────────────────────────────────────────
 app.use('/api-keys', apiKeyRoutes);
-app.use('/identity', identityRoutes);
+app.use('/identity', identityRoutes)
+app.use('/internal', internalRoutes);
 app.use('/api/verify-identity', requireApiKey, verifyIdentityRouter);
 
 // ── Deadman Monitor ───────────────────────────────────────────
