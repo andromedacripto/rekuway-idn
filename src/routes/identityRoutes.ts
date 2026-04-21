@@ -174,6 +174,18 @@ router.post('/new',
         result.privateKey
       );
 
+      // ✅ Callback IDENTITY_CREATED → dashboard
+      const _userId = req.apiKey?.userId
+      if (_userId) {
+        const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
+        fetch(`${_dashUrl}/api/keys/event`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+          body: JSON.stringify({ userId: _userId, type: 'IDENTITY_CREATED', severity: 'LOW', description: `New identity created: ${result.identity.id} [${paranoiaLevel}]`, blocked: false }),
+          signal: AbortSignal.timeout(3000)
+        }).catch(() => {})
+      }
+
       res.json({
         success: true,
         token:   credentialToken,   // contém id + privateKey codificados
