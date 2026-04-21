@@ -138,6 +138,22 @@ async function sendStealthFailure(
   res.status(randomFailureStatus()).json(STEALTH_FAILURE);
 }
 
+
+// ── Geo + VPN Detection ──────────────────────────────────────
+async function getGeoAndVPN(ip: string): Promise<{ country: string | null; city: string | null; isVPN: boolean; isDatacenter: boolean }> {
+  try {
+    if (!ip || ip === 'unknown' || ip.startsWith('192.168') || ip.startsWith('10.') || ip === '127.0.0.1') {
+      return { country: 'Local', city: 'Local', isVPN: false, isDatacenter: false }
+    }
+    const r = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,status,proxy,hosting`, { signal: AbortSignal.timeout(2500) })
+    const d = await r.json() as any
+    if (d.status !== 'success') return { country: null, city: null, isVPN: false, isDatacenter: false }
+    return { country: d.country || null, city: d.city || null, isVPN: d.proxy === true, isDatacenter: d.hosting === true }
+  } catch {
+    return { country: null, city: null, isVPN: false, isDatacenter: false }
+  }
+}
+
 // ─────────────────────────────────────────────
 //  POST /identity/new
 // ─────────────────────────────────────────────
@@ -234,7 +250,7 @@ router.post('/check', async (req: Request, res: Response) => {
 
       if (timeSince > deadmanTimerMs) {
         await killIdentity(identityId);
-      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Deadman timer expired — identity killed: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
+      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Deadman timer expired — identity killed: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
       await sendStealthFailure(res, 'DEADMAN_EXPIRED', identityId);
         return;
       }
@@ -255,7 +271,7 @@ router.post('/check', async (req: Request, res: Response) => {
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
-      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Invalid private key attempt on identity: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
+      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Invalid private key attempt on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
       await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
       return;
     }
@@ -331,7 +347,7 @@ router.post('/check', async (req: Request, res: Response) => {
       fetch(`${dashUrl}/api/keys/event`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
-        body: JSON.stringify({ userId: identity.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Identity KILLED after attacks: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent }),
+        body: JSON.stringify({ userId: identity.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Identity KILLED after attacks: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
         signal: AbortSignal.timeout(3000)
       }).catch(() => {})
       await sendStealthFailure(res, DefensiveAction.KILL, identityId);
@@ -340,7 +356,7 @@ router.post('/check', async (req: Request, res: Response) => {
 
     // ── LIE ──────────────────────────────────────────────────
     if (finalAction === DefensiveAction.LIE) {
-      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Attack deceived [LIE] on identity: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
+      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Attack deceived [LIE] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
       await sendStealthFailure(res, DefensiveAction.LIE, identityId);
       return;
     }
@@ -382,7 +398,7 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     // ── ALLOW (falha simples) ─────────────────────────────────
-    { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'MEDIUM', description: `Failed attempt [ALLOW] on identity: ${identityId}`, blocked: true }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
+    { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'MEDIUM', description: `Failed attempt [ALLOW] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
     await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
 
   } catch (error) {
