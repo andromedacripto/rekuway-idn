@@ -204,11 +204,21 @@ router.post('/new',
         }).catch(() => {})
       }
 
-      res.json({
-        success: true,
-        token:   credentialToken,   // contém id + privateKey codificados
-        exp:     result.identity.expiresAt,
-        lvl:     result.identity.paranoiaLevel,
+      // ── External token opaco — não decodificável ──────────
+      const externalToken = require('crypto').randomBytes(32).toString('hex')
+      const ttlSeconds = Math.max(1, Math.floor((result.identity.expiresAt - Date.now()) / 1000))
+      try {
+        const { db: dbInst } = await import('../config/database')
+        await dbInst.set(`ext:${externalToken}`, credentialToken, ttlSeconds)
+      } catch (_) {}
+
+      await stealthDelay()
+      res.status(200).json({
+        success:   true,
+        status:    'created',
+        mode:      'stealth',
+        token:     externalToken,
+        expiresAt: result.identity.expiresAt,
       });
 
     } catch (error) {
@@ -229,10 +239,28 @@ router.post('/check', async (req: Request, res: Response) => {
       return res.status(200).json(STEALTH_RESPONSE)
     }
   try {
-    // ✅ SEGURO: privateKey extraída do body mas JAMAIS logada
-    const { identityId, privateKey } = req.body;
+    // ✅ SEGURO: resolve externalToken → credenciais reais
+    const { token: extToken, identityId: rawId, privateKey: rawKey } = req.body;
     const clientIP  = req.ip || req.connection.remoteAddress || 'unknown';
     const userAgent = req.headers['user-agent'] || '';
+
+    let identityId = rawId
+    let privateKey = rawKey
+
+    // Resolver externalToken opaco se fornecido
+    if (extToken && extToken.length === 64 && /^[0-9a-f]+$/.test(extToken)) {
+      try {
+        const { db: dbExt } = await import('../config/database')
+        const realToken = await dbExt.get(`ext:${extToken}`)
+        if (realToken) {
+          const decoded = decodeCredentialToken(realToken as string)
+          if (decoded) {
+            identityId = decoded.identityId
+            privateKey = decoded.privateKey
+          }
+        }
+      } catch (_) {}
+    }
 
     if (!identityId || !privateKey) {
       return res.status(200).json(STEALTH_RESPONSE);
