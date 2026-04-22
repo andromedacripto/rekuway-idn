@@ -23,6 +23,9 @@ app.use((req, res, next) => {
   res.removeHeader('server');
   res.removeHeader('x-vercel-id');
   res.setHeader('server', 'edge');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
   next();
 });
 
@@ -45,6 +48,10 @@ app.use(async (req: any, res: any, next: any) => {
     const count = await _redis.incr(key)
     if (count === 1) await _redis.expire(key, _RL_WIN)
     if (count > _RL_MAX) {
+      // Delay progressivo — não revela bloqueio
+      const excess = count - _RL_MAX
+      const penaltyMs = Math.min(excess * 200, 3000)
+      await new Promise(r => setTimeout(r, penaltyMs))
       return res.status(200).json({ success: true, status: 'ok', mode: 'stealth' })
     }
     next()

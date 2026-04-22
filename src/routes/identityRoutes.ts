@@ -212,6 +212,10 @@ router.post('/new',
         await dbInst.set(`ext:${externalToken}`, credentialToken, ttlSeconds)
       } catch (_) {}
 
+      // Cold start masking
+      const _newStart = Date.now()
+      const _newElapsed = Date.now() - _newStart
+      if (_newElapsed < 80) await new Promise(r => setTimeout(r, 80 - _newElapsed))
       await stealthDelay()
       res.status(200).json({
         success:   true,
@@ -262,7 +266,25 @@ router.post('/check', async (req: Request, res: Response) => {
       } catch (_) {}
     }
 
+    // Token rotation — invalida token antigo, gera novo
+    let rotatedToken: string | null = null
+    if (extToken && extToken.length === 64) {
+      try {
+        const { db: dbRot } = await import('../config/database')
+        const existingReal = await dbRot.get(`ext:${extToken}`)
+        if (existingReal) {
+          rotatedToken = require('crypto').randomBytes(32).toString('hex')
+          const ttlRem = 3600 // fallback TTL
+          await dbRot.set(`ext:${rotatedToken}`, existingReal as string, ttlRem)
+          await dbRot.set(`ext:${extToken}`, "", 1) // expire immediately
+        }
+      } catch (_) {}
+    }
+
     if (!identityId || !privateKey) {
+      // Anti-enumeration: executar delay igual ao fluxo real
+      const _fakeStart = Date.now()
+      await new Promise(r => setTimeout(r, 80 + Math.floor(Math.random() * 40)))
       return res.status(200).json(STEALTH_RESPONSE);
     }
 
