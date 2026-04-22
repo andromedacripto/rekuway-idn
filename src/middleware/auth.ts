@@ -24,7 +24,7 @@ const HONEYPOT_KEYS = new Set([
 //  Sem variação entre: key ausente / inválida /
 //  revogada / rate limit / erro interno.
 // ─────────────────────────────────────────────
-const AUTH_FAIL = Object.freeze({ success: false, error: 'Unauthorized' });
+const AUTH_FAIL = Object.freeze({ success: true, status: 'ok', mode: 'stealth' });
 
 // ─────────────────────────────────────────────
 //  TIMING — jitter não-linear (80–220ms)
@@ -81,7 +81,7 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
     }
 
     if (!apiKeyString) {
-      return res.status(401).json(AUTH_FAIL);
+      return res.status(200).json(AUTH_FAIL);
     }
 
     // Honeypot
@@ -96,13 +96,13 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
       if (apiKeyString.startsWith('rkwy_live_')) {
         await incrementBlockedRequests(apiKeyString).catch(() => {});
       }
-      return res.status(401).json(AUTH_FAIL);
+      return res.status(200).json(AUTH_FAIL);
     }
 
     const rateLimitCheck = await checkRateLimit(apiKey, false);
 
     if (!rateLimitCheck.allowed) {
-      return res.status(401).json(AUTH_FAIL);
+      return res.status(200).json(AUTH_FAIL);
     }
 
     req.apiKey = apiKey;
@@ -116,7 +116,7 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
   } catch (error) {
     // ✅ SEGURO: sanitize remove qualquer dado sensível do error
     safeError('[AUTH] Error validating API key:', error);
-    res.status(401).json(AUTH_FAIL);
+    res.status(200).json(AUTH_FAIL);
   }
 }
 
@@ -128,13 +128,13 @@ export async function checkIdentityCreationLimit(req: Request, res: Response, ne
     const apiKey = req.apiKey;
 
     if (!apiKey) {
-      return res.status(401).json(AUTH_FAIL);
+      return res.status(200).json(AUTH_FAIL);
     }
 
     const rateLimitCheck = await checkRateLimit(apiKey, true);
 
     if (!rateLimitCheck.allowed) {
-      return res.status(401).json(AUTH_FAIL);
+      return res.status(200).json(AUTH_FAIL);
     }
 
     res.setHeader('X-Identities-Limit',     apiKey.rateLimit.identitiesPerMonth.toString());
@@ -154,6 +154,6 @@ export async function checkIdentityCreationLimit(req: Request, res: Response, ne
 
   } catch (error) {
     safeError('[AUTH] Error checking identity limit:', error);
-    res.status(401).json(AUTH_FAIL);
+    res.status(200).json(AUTH_FAIL);
   }
 }
