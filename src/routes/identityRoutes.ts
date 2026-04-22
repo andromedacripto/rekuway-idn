@@ -218,8 +218,10 @@ router.post('/new',
 
 // ─────────────────────────────────────────────
 //  POST /identity/check  (STEALTH REFACTORED)
+//  Timing protection — mascara diferença entre KILL, LIE, ALLOW
 // ─────────────────────────────────────────────
 router.post('/check', async (req: Request, res: Response) => {
+    const _reqStart = Date.now()
     const clientIP = req.headers['x-forwarded-for']?.toString().split(',')[0] || req.socket.remoteAddress || 'unknown'
     if (!checkRateLimit(clientIP)) {
       return res.status(429).json({ success: false, error: 'Too many requests' })
@@ -272,7 +274,12 @@ router.post('/check', async (req: Request, res: Response) => {
 
     if (!validatedIdentity) {
       { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Invalid private key attempt on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
-      await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
+      
+    // ── Timing protection — normaliza tempo de resposta ─────
+    const _elapsed = Date.now() - _reqStart
+    const _target = 120 + Math.random() * 30
+    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
+    await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
       return;
     }
 
@@ -350,14 +357,59 @@ router.post('/check', async (req: Request, res: Response) => {
         body: JSON.stringify({ userId: identity.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Identity KILLED after attacks: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
         signal: AbortSignal.timeout(3000)
       }).catch(() => {})
-      await sendStealthFailure(res, DefensiveAction.KILL, identityId);
+      
+    // ── Timing protection — normaliza tempo de resposta ─────
+    const _elapsed = Date.now() - _reqStart
+    const _target = 120 + Math.random() * 30
+    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
+    await sendStealthFailure(res, DefensiveAction.KILL, identityId);
       return;
     }
 
     // ── LIE ──────────────────────────────────────────────────
     if (finalAction === DefensiveAction.LIE) {
+    // ── LIE INTELLIGENCE EVENT (interno — nunca vaza para o cliente) ──
+    const lieEvent = {
+      eventId: crypto.randomUUID(),
+      timestamp: Date.now(),
+      identityIdHash: require('crypto').createHash('sha256').update(identityId).digest('hex').slice(0, 16),
+      action: 'LIE',
+      lieStrategy: 'fake_success',
+      actor: {
+        ip: clientIP,
+        forwardedFor: req.headers['x-forwarded-for'] || null,
+        userAgent: userAgent || 'unknown',
+        device: /mobile/i.test(userAgent) ? 'mobile' : /bot|curl|python|go-http/i.test(userAgent) ? 'bot' : 'desktop',
+      },
+      context: {
+        attemptNumber: identity.attempts || 0,
+        totalAttempts: identity.totalAttempts || 0,
+        afterRegeneration: ((identity as any).regenerations || 0) > 0,
+        regenerations: (identity as any).regenerations || 0,
+      },
+      risk: {
+        level: (identity.attempts || 0) > 5 ? 'CRITICAL' : (identity.attempts || 0) > 3 ? 'HIGH' : 'MEDIUM',
+        score: Math.min(100, ((identity.attempts || 0) * 15) + (((identity as any).regenerations || 0) * 20)),
+      },
+      fingerprint: require('crypto').createHash('sha256').update(clientIP + (userAgent || '')).digest('hex').slice(0, 32),
+      decision: {
+        reason: 'tentativa suspeita — sistema aplicou deception',
+        nextAction: (identity.attempts || 0) >= 3 ? 'KILL' : 'MONITOR',
+      }
+    }
+    // Salva internamente no Redis (nunca exposto via API)
+    try {
+      const { db } = await import('../config/database')
+      await db.set(`lie_event:${lieEvent.eventId}`, lieEvent, 86400)
+    } catch (_) {}
+
       { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Attack deceived [LIE] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
-      await sendStealthFailure(res, DefensiveAction.LIE, identityId);
+      
+    // ── Timing protection — normaliza tempo de resposta ─────
+    const _elapsed = Date.now() - _reqStart
+    const _target = 120 + Math.random() * 30
+    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
+    await sendStealthFailure(res, DefensiveAction.LIE, identityId);
       return;
     }
 
@@ -393,12 +445,22 @@ router.post('/check', async (req: Request, res: Response) => {
         signal: AbortSignal.timeout(3000)
       }).catch(() => {})
 
-      await sendStealthFailure(res, DefensiveAction.REGENERATE, identityId);
+      
+    // ── Timing protection — normaliza tempo de resposta ─────
+    const _elapsed = Date.now() - _reqStart
+    const _target = 120 + Math.random() * 30
+    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
+    await sendStealthFailure(res, DefensiveAction.REGENERATE, identityId);
       return;
     }
 
     // ── ALLOW (falha simples) ─────────────────────────────────
     { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'MEDIUM', description: `Failed attempt [ALLOW] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
+    
+    // ── Timing protection — normaliza tempo de resposta ─────
+    const _elapsed = Date.now() - _reqStart
+    const _target = 120 + Math.random() * 30
+    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
     await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
 
   } catch (error) {
@@ -538,22 +600,14 @@ router.post('/kill', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
-    const { id }   = req.params;
+    const { id } = req.params;
     const identity = await db.getIdentity(id);
-
     if (!identity || !identity.isAlive) {
-      return res.status(404).json({ exists: false });
+      return res.json({ exists: false, status: 'not_found' });
     }
-
-    res.json({
-      exists:        true,
-      paranoiaLevel: identity.paranoiaLevel,
-      expiresAt:     identity.expiresAt,
-    });
-
+    return res.json({ exists: true, status: 'active' });
   } catch (error) {
-    safeError('[API] Error checking status:', error);
-    res.status(500).json({ success: false, error: 'Failed to check status' });
+    return res.json({ exists: false, status: 'error' });
   }
 });
 
