@@ -93,8 +93,9 @@ export function decodeCredentialToken(token: string): {
  * O atacante não consegue distinguir o que aconteceu internamente.
  */
 const STEALTH_FAILURE = {
-  success: false,
-  error:   'Invalid identity or private key',
+  success: true,
+  status:  'ok',
+  mode:    'stealth',
 } as const;
 
 /**
@@ -108,7 +109,7 @@ const FAILURE_STATUS_POOL = [401, 403, 404] as const;
  * Impede que atacantes identifiquem o tipo de falha pelo status code.
  */
 function randomFailureStatus(): number {
-  return FAILURE_STATUS_POOL[Math.floor(Math.random() * FAILURE_STATUS_POOL.length)];
+  return 200;
 }
 
 /**
@@ -119,7 +120,7 @@ function randomFailureStatus(): number {
  *  2. Aumenta o custo de brute-force automatizado
  *  3. Mascara diferenças de tempo entre KILL, LIE e ALLOW
  */
-async function stealthDelay(minMs = 200, maxMs = 1000): Promise<void> {
+async function stealthDelay(minMs = 80, maxMs = 120): Promise<void> {
   const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   await new Promise((resolve) => setTimeout(resolve, delay));
 }
@@ -128,6 +129,8 @@ async function stealthDelay(minMs = 200, maxMs = 1000): Promise<void> {
  * Envia a resposta stealth de falha.
  * Centraliza o envio para garantir consistência em TODOS os casos de erro.
  */
+const STEALTH_RESPONSE = { success: true, status: 'ok', mode: 'stealth' } as const
+
 async function sendStealthFailure(
   res: Response,
   action: DefensiveAction | 'INVALID_BODY' | 'NOT_FOUND' | 'DEADMAN_EXPIRED',
@@ -166,8 +169,7 @@ router.post('/new',
 
       if (!['low', 'medium', 'high', 'deadman'].includes(paranoiaLevel)) {
         return res.status(400).json({
-          success: false,
-          error: 'Invalid paranoia level. Must be: low, medium, high, or deadman',
+          ...STEALTH_RESPONSE,
         });
       }
 
@@ -211,7 +213,7 @@ router.post('/new',
 
     } catch (error) {
       safeError('[API] Error creating identity:', error);
-      res.status(500).json({ success: false, error: 'Failed to create identity' });
+      res.status(200).json(STEALTH_RESPONSE);
     }
   }
 );
@@ -224,7 +226,7 @@ router.post('/check', async (req: Request, res: Response) => {
     const _reqStart = Date.now()
     const clientIP = req.headers['x-forwarded-for']?.toString().split(',')[0] || req.socket.remoteAddress || 'unknown'
     if (!checkRateLimit(clientIP)) {
-      return res.status(429).json({ success: false, error: 'Too many requests' })
+      return res.status(200).json(STEALTH_RESPONSE)
     }
   try {
     // ✅ SEGURO: privateKey extraída do body mas JAMAIS logada
@@ -233,7 +235,7 @@ router.post('/check', async (req: Request, res: Response) => {
     const userAgent = req.headers['user-agent'] || '';
 
     if (!identityId || !privateKey) {
-      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
+      return res.status(200).json(STEALTH_RESPONSE);
     }
 
     let identity = await db.getIdentity(identityId);
@@ -277,7 +279,7 @@ router.post('/check', async (req: Request, res: Response) => {
       
     // ── Timing protection — normaliza tempo de resposta ─────
     const _elapsed = Date.now() - _reqStart
-    const _target = 120 + Math.random() * 30
+    const _target = 80 + Math.random() * 40
     if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
     await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
       return;
@@ -465,7 +467,7 @@ router.post('/check', async (req: Request, res: Response) => {
 
   } catch (error) {
     safeError('[API] ❌ Error in /check:', error);
-    res.status(500).json({ success: false, error: 'Failed to check identity' });
+    res.status(200).json(STEALTH_RESPONSE);
   }
 });
 
@@ -477,13 +479,13 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
     const { identityId, privateKey } = req.body;
 
     if (!identityId || !privateKey) {
-      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
+      return res.status(200).json(STEALTH_RESPONSE);
     }
 
     const identity = await db.getIdentity(identityId);
 
     if (!identity || !identity.isAlive) {
-      return res.status(401).json({ success: false, error: 'Invalid identity or private key' });
+      return res.status(200).json(STEALTH_RESPONSE);
     }
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
@@ -603,11 +605,11 @@ router.get('/status/:id', async (req: Request, res: Response) => {
     const { id } = req.params;
     const identity = await db.getIdentity(id);
     if (!identity || !identity.isAlive) {
-      return res.json({ exists: false, status: 'not_found' });
+      return res.status(200).json(STEALTH_RESPONSE);
     }
-    return res.json({ exists: true, status: 'active' });
+    return res.status(200).json(STEALTH_RESPONSE);
   } catch (error) {
-    return res.json({ exists: false, status: 'error' });
+    return res.status(200).json(STEALTH_RESPONSE);
   }
 });
 

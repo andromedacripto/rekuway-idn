@@ -45,7 +45,7 @@ app.use(async (req: any, res: any, next: any) => {
     const count = await _redis.incr(key)
     if (count === 1) await _redis.expire(key, _RL_WIN)
     if (count > _RL_MAX) {
-      return res.status(429).json({ success: false, error: 'Too many requests' })
+      return res.status(200).json({ success: true, status: 'ok', mode: 'stealth' })
     }
     next()
   } catch {
