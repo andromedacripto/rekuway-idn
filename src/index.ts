@@ -92,3 +92,8 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export default app;
+
+// ── Catch-all para métodos não permitidos ─────────────────────
+app.use((req: any, res: any) => {
+  res.status(200).json({ success: true, status: 'ok', mode: 'stealth' })
+})
