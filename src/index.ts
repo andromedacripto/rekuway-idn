@@ -17,7 +17,6 @@ const app = express();
 app.disable('x-powered-by');
 
 // ── Middleware global de headers ──────────────────────────────
-// Sobrescreve headers que revelam stack/infra real
 app.use((req, res, next) => {
   res.removeHeader('x-powered-by');
   res.removeHeader('server');
@@ -31,7 +30,7 @@ app.use((req, res, next) => {
 
 app.use(cors());
 
-// ── Rate Limiting Global por IP (Redis) ─────────────────────
+// ── Rate Limiting Global por IP (Redis) ──────────────────────
 import { Redis } from '@upstash/redis'
 const _redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -48,7 +47,6 @@ app.use(async (req: any, res: any, next: any) => {
     const count = await _redis.incr(key)
     if (count === 1) await _redis.expire(key, _RL_WIN)
     if (count > _RL_MAX) {
-      // Delay progressivo — não revela bloqueio
       const excess = count - _RL_MAX
       const penaltyMs = Math.min(excess * 200, 3000)
       await new Promise(r => setTimeout(r, penaltyMs))
@@ -56,15 +54,13 @@ app.use(async (req: any, res: any, next: any) => {
     }
     next()
   } catch {
-    next() // Se Redis falhar, deixa passar (fail-open)
+    next()
   }
 })
 
 app.use(express.json());
 
-// ── Health check — sem informação útil ───────────────────────
-// Retorna apenas o suficiente pra load balancer considerar healthy
-// Sem uptime, sem versão, sem nome do sistema
+// ── Health check ──────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({ status: 'ok', ts: Date.now() });
 });
@@ -82,18 +78,15 @@ app.use('/api/verify-identity', requireApiKey, verifyIdentityRouter);
 // ── Deadman Monitor ───────────────────────────────────────────
 startDeadmanMonitor();
 
-// ── Start server (não roda na Vercel) ─────────────────────────
-if (process.env.NODE_ENV !== 'production') {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    // sem log de porta ou nome — só confirma que subiu
-    console.log(`[${new Date().toISOString()}] server ready`);
-  });
-}
-
-export default app;
+// ── Start server ──────────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`[${new Date().toISOString()}] server ready`);
+});
 
 // ── Catch-all para métodos não permitidos ─────────────────────
 app.use((req: any, res: any) => {
   res.status(200).json({ success: true, status: 'ok', mode: 'stealth' })
 })
+
+export default app;
