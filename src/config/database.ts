@@ -77,7 +77,7 @@ class RedisKVStore {
       }
 
       if (typeof value === 'string') {
-        return JSON.parse(value);
+        try { return JSON.parse(value); } catch { return value; }
       }
 
       return value;
