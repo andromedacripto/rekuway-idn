@@ -73,6 +73,8 @@ app.get('/health', (req, res) => {
 app.use('/api-keys', apiKeyRoutes);
 app.use('/identity', identityRoutes)
 app.use('/internal', internalRoutes);
+const analyzeRoutes = require('./routes/analyzeRoutes').default;
+app.use('/analyze', analyzeRoutes);
 app.use('/api/verify-identity', requireApiKey, verifyIdentityRouter);
 
 // ── Deadman Monitor ───────────────────────────────────────────
