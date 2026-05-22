@@ -176,12 +176,8 @@ router.post('/new',
       const result = await createIdentity(paranoiaLevel);
       // ✅ Salvar userId na identidade para rastreamento
       if (req.apiKey?.userId) {
-        const { db } = await import('../config/database');
-        const stored = await db.getIdentity(result.identity.id);
-        if (stored) {
-          stored.userId = req.apiKey.userId;
-          await db.set(`identity:${result.identity.id}`, stored);
-        }
+        result.identity.userId = req.apiKey.userId;
+        await db.setIdentity(result.identity.id, result.identity);
       }
 
       // ✅ STEALTH: token opaco — parece um token comum
