@@ -110,7 +110,7 @@ export async function trackEndpoint(
 
     await db.set(key, JSON.stringify(sequence), 3600);
   } catch {
-    console.error('[FEATURES] Failed to track endpoint:', error);
+    console.error("[FEATURES] Failed to track endpoint:");
   }
 }
 
@@ -156,7 +156,7 @@ async function trackClientIP(identityId: string, ip: string): Promise<void> {
 
     await db.set(key, JSON.stringify(ips), 3600);
   } catch {
-    console.error('[FEATURES] Failed to track IP:', error);
+    console.error("[FEATURES] Failed to track IP:");
   }
 }
 
@@ -187,7 +187,7 @@ async function trackFingerprint(
     const key = `fingerprint:${identityId}`;
     await db.set(key, JSON.stringify(fingerprint), 3600);
   } catch {
-    console.error('[FEATURES] Failed to track fingerprint:', error);
+    console.error("[FEATURES] Failed to track fingerprint:");
   }
 }
 
@@ -220,7 +220,7 @@ async function trackGeolocation(
     const key = `geo:${identityId}`;
     await db.set(key, JSON.stringify(geo), 3600);
   } catch {
-    console.error('[FEATURES] Failed to track geolocation:', error);
+    console.error("[FEATURES] Failed to track geolocation:");
   }
 }
 

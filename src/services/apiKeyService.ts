@@ -68,7 +68,7 @@ export async function createApiKey(
     isActive:  true,
   };
 
-  await db.setApiKey(hashedKey, apiKey);
+  await db.setApiKey(hashedKey, apiKey as unknown as Record<string, unknown>);
 
   // ✅ SEGURO: loga userId e tier, NUNCA a plainKey ou hashedKey completo
   safeLog(`[API_KEY] Created:`, { userId, tier, name });
@@ -80,8 +80,7 @@ export async function validateApiKey(apiKey: string): Promise<ApiKey | null> {
   if (!apiKey || !apiKey.startsWith('rkwy_live_')) return null;
 
   const hashedKey = hashApiKey(apiKey);
-  const keyData   = await db.getApiKey(hashedKey);
-
+  const keyData = await db.getApiKey(hashedKey) as unknown as ApiKey | null;
   if (!keyData || !keyData.isActive) return null;
   return keyData;
 }
@@ -134,7 +133,7 @@ export async function checkRateLimit(
 
   if (isIdentityCreation) apiKey.usage.identitiesCreated++;
 
-  await db.setApiKey(apiKey.hashedKey, apiKey);
+  await db.setApiKey(apiKey.hashedKey, apiKey as unknown as Record<string, unknown>);
 
   return {
     allowed: true,
@@ -146,9 +145,9 @@ export async function checkRateLimit(
     },
   };
 }
-
 export async function listUserApiKeys(userId: string): Promise<ApiKey[]> {
-  const allKeys = await db.listApiKeys();
+
+  const allKeys = await db.listApiKeys() as unknown as ApiKey[];
   return allKeys.filter(key => key.userId === userId);
 }
 
@@ -167,7 +166,7 @@ export async function revokeApiKey(hashedKey: string): Promise<boolean> {
 export async function incrementBlockedRequests(apiKeyString: string): Promise<void> {
   try {
     const hashedKey = crypto.createHash('sha256').update(apiKeyString).digest('hex');
-    let keyData     = await db.getApiKey(hashedKey);
+    let keyData = await db.getApiKey(hashedKey) as unknown as ApiKey | null;
 
     if (!keyData) {
       keyData = {
@@ -192,7 +191,7 @@ export async function incrementBlockedRequests(apiKeyString: string): Promise<vo
 
     keyData.usage.blockedRequests = (keyData.usage.blockedRequests || 0) + 1;
     keyData.usage.totalRequests   = (keyData.usage.totalRequests   || 0) + 1;
-    await db.setApiKey(hashedKey, keyData);
+    await db.setApiKey(hashedKey, keyData as unknown as Record<string, unknown>);
   } catch (error) {
     safeError('[API_KEY] Error incrementing blocked:', error);
   }
