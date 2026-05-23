@@ -85,3 +85,6 @@ ai-service/*.pyc
 ai-service/model.pkl
 ai-service/scaler.pkl
 *.key\n*.pem\nprivate.*
+dist/
+fix_callbacks_ip.js
+main

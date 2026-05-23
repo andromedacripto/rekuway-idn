@@ -44,7 +44,6 @@ export async function combineDecisionsV3(context: DecisionContext): Promise<Deci
 
   const auditLog: string[] = [];
 
-  // ✅ SEGURO: loga apenas IDs e decisões, sem dados sensíveis
   const logCtx = {
     id:          identityId,
     rulesAction: ruleBasedAction,
@@ -201,10 +200,9 @@ function buildReasonV3(
   return reason;
 }
 
-async function logDecision(identityId: string, decision: any): Promise<void> {
+async function logDecision(identityId: string, decision: Record<string, unknown>): Promise<void> {
   try {
     const logKey = `decision:${identityId}:${Date.now()}`;
-    // ✅ SEGURO: decision object não contém privateKey (apenas ações e scores)
     await db.set(logKey, JSON.stringify({ ...decision, timestamp: Date.now() }), 86400);
   } catch (error) {
     safeError('[DECISION] Failed to log decision:', error);
@@ -214,8 +212,8 @@ async function logDecision(identityId: string, decision: any): Promise<void> {
 /** @deprecated Use combineDecisionsV3 */
 export function combineDecisions(
   ruleBasedAction: DefensiveAction,
-  _aiRecommendation: 'ALLOW' | 'REGENERATE' | 'LIE' | 'KILL' | null,
-  _validationSuccessful = false
+
+
 ): DefensiveAction {
   safeWarn('[DECISION] ⚠️ Using deprecated combineDecisions — upgrade to combineDecisionsV3');
   return ruleBasedAction;

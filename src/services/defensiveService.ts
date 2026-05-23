@@ -8,7 +8,7 @@ export interface DefensiveResponse {
   action: DefensiveAction;
   reason: string;
   identity: Identity | null;
-  fakeData?: any;
+  fakeData?: Record<string, unknown>;
   newIdentity?: { identity: Identity; privateKey: string };
 }
 
@@ -16,8 +16,8 @@ export interface DefensiveResponse {
  * 🔒 LOCK REDIS ATÔMICO V2
  */
 async function acquireLock(identityId: string, timeoutMs = 5000): Promise<boolean> {
-  const lockKey   = `lock:${identityId}`;
-  const lockValue = `${Date.now()}`;
+  const lockKey    = `lock:${identityId}`;
+  const lockValue  = `${Date.now()}`;
   const ttlSeconds = Math.ceil(timeoutMs / 1000);
 
   try {
@@ -127,13 +127,12 @@ export async function defensiveResponse(
       await db.setIdentity(freshIdentity.id, freshIdentity);
     }
 
-    // ✅ SEGURO: loga apenas métricas, sem dados sensíveis
     safeLog(`[DEFENSE] 🎯 Analysis:`, {
-      id:           freshIdentity.id,
+      id:            freshIdentity.id,
       event,
-      attempts:     freshIdentity.attempts,
-      maxAttempts:  config.maxAttempts,
-      total:        freshIdentity.totalAttempts || 0,
+      attempts:      freshIdentity.attempts,
+      maxAttempts:   config.maxAttempts,
+      total:         freshIdentity.totalAttempts || 0,
       regenerations: freshIdentity.regenerationCount || 0,
     });
 
@@ -187,8 +186,8 @@ export async function defensiveResponse(
     if (config.regenerateThreshold && freshIdentity.attempts >= config.regenerateThreshold) {
       if (!freshIdentity.regenerationCount || freshIdentity.regenerationCount === 0) {
         safeLog(`[DEFENSE] 🔄 REGENERATE: threshold reached`, {
-          id:       freshIdentity.id,
-          attempts: freshIdentity.attempts,
+          id:        freshIdentity.id,
+          attempts:  freshIdentity.attempts,
           threshold: config.regenerateThreshold,
         });
         const newIdentity = await regenerateIdentity(freshIdentity.id);
@@ -258,17 +257,17 @@ export function detectThreatEvent(
 export async function checkDeadmanSwitch(identity: Identity): Promise<boolean> {
   if (identity.paranoiaLevel !== 'deadman') return false;
 
-  const config            = paranoiaConfig.deadman;
-  const now               = Date.now();
-  const lastHeartbeat     = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
+  const config             = paranoiaConfig.deadman;
+  const now                = Date.now();
+  const lastHeartbeat      = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
   const timeSinceHeartbeat = now - lastHeartbeat;
-  const deadmanTimerMs    = (config.deadmanTimer || 60) * 1000;
+  const deadmanTimerMs     = (config.deadmanTimer || 60) * 1000;
 
   safeLog(`[DEADMAN] 💓 Checking:`, {
-    id:                identity.id,
-    lastHeartbeat:     new Date(lastHeartbeat).toISOString(),
-    timeSinceSec:      Math.floor(timeSinceHeartbeat / 1000),
-    timerLimitSec:     config.deadmanTimer,
+    id:            identity.id,
+    lastHeartbeat: new Date(lastHeartbeat).toISOString(),
+    timeSinceSec:  Math.floor(timeSinceHeartbeat / 1000),
+    timerLimitSec: config.deadmanTimer,
   });
 
   if (timeSinceHeartbeat > deadmanTimerMs) {

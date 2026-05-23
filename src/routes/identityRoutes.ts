@@ -1,6 +1,6 @@
+import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { createIdentity, validateIdentity, killIdentity, regenerateIdentity } from '../services/identityService';
-import { defensiveResponse, detectThreatEvent } from '../services/defensiveService';
 import { updateHeartbeat } from '../services/heartbeat';
 import { db } from '../config/database';
 import { DefensiveAction } from '../models/Identity';
@@ -9,8 +9,8 @@ import { safeLog, safeError } from '../utils/sanitize';
 import paranoiaConfig from '../config/paranoia.json';
 import { extractFeatures, trackEndpoint } from '../services/featureExtraction';
 import { analyzeWithAI } from '../services/aiClient';
-import { combineDecisionsV3, DecisionContext } from '../services/decisionEngine';
 import { analyzeWithRailwayAI, convertToRailwayFeatures } from '../services/railwayAiClient';
+import { newIdentitySchema, checkIdentitySchema, heartbeatSchema, regenerateSchema, killSchema, parseBody } from './validation';
 
 const router = Router();
 
@@ -31,25 +31,16 @@ function checkRateLimit(ip: string): boolean {
   return true
 }
 
+// ── Timing protection helper ──────────────────────────────────
+async function normalizeResponseTime(startMs: number, targetMs: number): Promise<void> {
+  const elapsed = Date.now() - startMs
+  if (elapsed < targetMs) await new Promise(r => setTimeout(r, targetMs - elapsed))
+}
 
 // ─────────────────────────────────────────────
 //  TOKEN ENCODING — Stealth Credential Layer
-//  Empacota id + privateKey num token opaco.
-//  Para o atacante parece um token comum.
-//  Para o cliente legítimo é decodificável.
 // ─────────────────────────────────────────────
 
-/**
- * Codifica id + privateKey num token base64url opaco.
- *
- * Formato interno (nunca documentado publicamente):
- *   base64url({ i: identityId, k: privateKey, t: timestamp, v: 1 })
- *
- * Para o atacante parece um token JWT comum.
- * Para o cliente legítimo é decodificável com qualquer base64 decoder.
- *
- * NUNCA logar o resultado desta função.
- */
 function encodeCredentialToken(identityId: string, privateKey: string): string {
   const payload = JSON.stringify({
     i: identityId,
@@ -60,14 +51,6 @@ function encodeCredentialToken(identityId: string, privateKey: string): string {
   return Buffer.from(payload).toString('base64url');
 }
 
-/**
- * Decodifica o token de credencial.
- * Exportada para uso nos clientes legítimos (GLPI, Zabbix, Mautic, etc).
- * Retorna null se o token for inválido.
- *
- * Uso no cliente:
- *   const { identityId, privateKey } = decodeCredentialToken(token);
- */
 export function decodeCredentialToken(token: string): {
   identityId: string;
   privateKey: string;
@@ -83,52 +66,23 @@ export function decodeCredentialToken(token: string): {
 
 // ─────────────────────────────────────────────
 //  STEALTH LAYER
-//  Camada de ofuscação de respostas HTTP.
-//  Nenhuma lógica interna deve vazar para o cliente.
 // ─────────────────────────────────────────────
 
-/**
- * Resposta canônica de falha — idêntica para QUALQUER erro de autenticação.
- * KILL, LIE, REGENERATE e falha simples retornam exatamente a mesma coisa.
- * O atacante não consegue distinguir o que aconteceu internamente.
- */
 const STEALTH_FAILURE = {
   success: true,
   status:  'ok',
   mode:    'stealth',
 } as const;
 
-/**
- * Status HTTP permitidos para respostas de falha.
- * Randomizados para dificultar fingerprinting do sistema.
- */
-const FAILURE_STATUS_POOL = [401, 403, 404] as const;
-
-/**
- * Seleciona um status HTTP aleatório do pool de falha.
- * Impede que atacantes identifiquem o tipo de falha pelo status code.
- */
 function randomFailureStatus(): number {
   return 200;
 }
 
-/**
- * Aplica um delay aleatório antes de responder com falha.
- *
- * Objetivos:
- *  1. Dificulta ataques de timing (timing oracle)
- *  2. Aumenta o custo de brute-force automatizado
- *  3. Mascara diferenças de tempo entre KILL, LIE e ALLOW
- */
 async function stealthDelay(minMs = 80, maxMs = 120): Promise<void> {
   const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
   await new Promise((resolve) => setTimeout(resolve, delay));
 }
 
-/**
- * Envia a resposta stealth de falha.
- * Centraliza o envio para garantir consistência em TODOS os casos de erro.
- */
 const STEALTH_RESPONSE = { success: true, status: 'ok', mode: 'stealth' } as const
 
 async function sendStealthFailure(
@@ -141,7 +95,6 @@ async function sendStealthFailure(
   res.status(randomFailureStatus()).json(STEALTH_FAILURE);
 }
 
-
 // ── Geo + VPN Detection ──────────────────────────────────────
 async function getGeoAndVPN(ip: string): Promise<{ country: string | null; city: string | null; isVPN: boolean; isDatacenter: boolean }> {
   try {
@@ -149,9 +102,14 @@ async function getGeoAndVPN(ip: string): Promise<{ country: string | null; city:
       return { country: 'Local', city: 'Local', isVPN: false, isDatacenter: false }
     }
     const r = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,status,proxy,hosting`, { signal: AbortSignal.timeout(2500) })
-    const d = await r.json() as any
+    const d = await r.json() as Record<string, unknown>
     if (d.status !== 'success') return { country: null, city: null, isVPN: false, isDatacenter: false }
-    return { country: d.country || null, city: d.city || null, isVPN: d.proxy === true, isDatacenter: d.hosting === true }
+    return {
+      country: (d.country as string) || null,
+      city: (d.city as string) || null,
+      isVPN: d.proxy === true,
+      isDatacenter: d.hosting === true,
+    }
   } catch {
     return { country: null, city: null, isVPN: false, isDatacenter: false }
   }
@@ -165,53 +123,39 @@ router.post('/new',
   checkIdentityCreationLimit,
   async (req: Request, res: Response) => {
     try {
-      const { paranoiaLevel = 'medium' } = req.body;
-
-      if (!['low', 'medium', 'high', 'deadman'].includes(paranoiaLevel)) {
-        return res.status(400).json({
-          ...STEALTH_RESPONSE,
-        });
-      }
+      const parsed = parseBody(newIdentitySchema, req.body);
+      if (!parsed.success) return res.status(400).json(STEALTH_RESPONSE);
+      const { paranoiaLevel } = parsed.data;
 
       const result = await createIdentity(paranoiaLevel);
-      // ✅ Salvar userId na identidade para rastreamento
+
       if (req.apiKey?.userId) {
         result.identity.userId = req.apiKey.userId;
         await db.setIdentity(result.identity.id, result.identity);
       }
 
-      // ✅ STEALTH: token opaco — parece um token comum
-      // id + privateKey empacotados em base64url — nunca expostos separadamente
-      // O atacante não consegue identificar que é um sistema de chaves RSA
       const credentialToken = encodeCredentialToken(
         result.identity.id,
         result.privateKey
       );
 
-      // ✅ Callback IDENTITY_CREATED → dashboard
-      const _userId = req.apiKey?.userId
-      if (_userId) {
-        const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
-        fetch(`${_dashUrl}/api/keys/event`, {
+      const userId = req.apiKey?.userId
+      if (userId) {
+        const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
+        fetch(`${dashUrl}/api/keys/event`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
-          body: JSON.stringify({ userId: _userId, type: 'IDENTITY_CREATED', severity: 'LOW', description: `New identity created: ${result.identity.id} [${paranoiaLevel}]`, blocked: false }),
+          body: JSON.stringify({ userId, type: 'IDENTITY_CREATED', severity: 'LOW', description: `New identity created: ${result.identity.id} [${paranoiaLevel}]`, blocked: false }),
           signal: AbortSignal.timeout(3000)
         }).catch(() => {})
       }
 
-      // ── External token opaco — não decodificável ──────────
-      const externalToken = require('crypto').randomBytes(32).toString('hex')
+      const externalToken = crypto.randomBytes(32).toString('hex')
       const ttlSeconds = Math.max(1, Math.floor((result.identity.expiresAt - Date.now()) / 1000))
       try {
-        const { db: dbInst } = await import('../config/database')
-        await dbInst.set(`ext:${externalToken}`, credentialToken, ttlSeconds)
-      } catch (_) {}
+        await db.set(`ext:${externalToken}`, credentialToken, ttlSeconds)
+      } catch {}
 
-      // Cold start masking
-      const _newStart = Date.now()
-      const _newElapsed = Date.now() - _newStart
-      if (_newElapsed < 80) await new Promise(r => setTimeout(r, 80 - _newElapsed))
       await stealthDelay()
       res.status(200).json({
         success:   true,
@@ -229,29 +173,32 @@ router.post('/new',
 );
 
 // ─────────────────────────────────────────────
-//  POST /identity/check  (STEALTH REFACTORED)
-//  Timing protection — mascara diferença entre KILL, LIE, ALLOW
+//  POST /identity/check
 // ─────────────────────────────────────────────
 router.post('/check', async (req: Request, res: Response) => {
-    const _reqStart = Date.now()
-    const clientIP = req.headers['x-forwarded-for']?.toString().split(',')[0] || req.socket.remoteAddress || 'unknown'
-    if (!checkRateLimit(clientIP)) {
-      return res.status(200).json(STEALTH_RESPONSE)
-    }
+  const reqStart = Date.now()
+  const clientIP = req.headers['x-forwarded-for']?.toString().split(',')[0] || req.socket.remoteAddress || 'unknown'
+
+  if (!checkRateLimit(clientIP)) {
+    return res.status(200).json(STEALTH_RESPONSE)
+  }
+
   try {
-    // ✅ SEGURO: resolve externalToken → credenciais reais
-    const { token: extToken, identityId: rawId, privateKey: rawKey } = req.body;
-    const clientIP  = req.ip || req.connection.remoteAddress || 'unknown';
+    const parsed = parseBody(checkIdentitySchema, req.body);
+    if (!parsed.success) {
+      await new Promise(r => setTimeout(r, 80 + Math.floor(Math.random() * 40)))
+      return res.status(200).json(STEALTH_RESPONSE);
+    }
+
+    const { token: extToken } = parsed.data;
     const userAgent = req.headers['user-agent'] || '';
 
-    let identityId = rawId
-    let privateKey = rawKey
+    let identityId: string = parsed.data.identityId || ''
+    let privateKey: string = parsed.data.privateKey || ''
 
-    // Resolver externalToken opaco se fornecido
-    if (extToken && extToken.length === 64 && /^[0-9a-f]+$/.test(extToken)) {
+    if (extToken) {
       try {
-        const { db: dbExt } = await import('../config/database')
-        const realToken = await dbExt.get(`ext:${extToken}`)
+        const realToken = await db.get(`ext:${extToken}`)
         if (realToken) {
           const decoded = decodeCredentialToken(realToken as string)
           if (decoded) {
@@ -259,27 +206,23 @@ router.post('/check', async (req: Request, res: Response) => {
             privateKey = decoded.privateKey
           }
         }
-      } catch (_) {}
+      } catch {}
     }
 
-    // Token rotation — invalida token antigo, gera novo
     let rotatedToken: string | null = null
-    if (extToken && extToken.length === 64) {
+    if (extToken) {
       try {
-        const { db: dbRot } = await import('../config/database')
-        const existingReal = await dbRot.get(`ext:${extToken}`)
+        const existingReal = await db.get(`ext:${extToken}`)
         if (existingReal) {
-          rotatedToken = require('crypto').randomBytes(32).toString('hex')
-          const ttlRem = 3600 // fallback TTL
-          await dbRot.set(`ext:${rotatedToken}`, existingReal as string, ttlRem)
-          await dbRot.set(`ext:${extToken}`, "", 1) // expire immediately
+          rotatedToken = crypto.randomBytes(32).toString('hex')
+          const ttlRem = 3600
+          await db.set(`ext:${rotatedToken}`, existingReal as string, ttlRem)
+          await db.set(`ext:${extToken}`, '', 1)
         }
-      } catch (_) {}
+      } catch {}
     }
 
     if (!identityId || !privateKey) {
-      // Anti-enumeration: executar delay igual ao fluxo real
-      const _fakeStart = Date.now()
       await new Promise(r => setTimeout(r, 80 + Math.floor(Math.random() * 40)))
       return res.status(200).json(STEALTH_RESPONSE);
     }
@@ -291,7 +234,6 @@ router.post('/check', async (req: Request, res: Response) => {
       return;
     }
 
-    // ── Verificação DEADMAN timer ────────────────────────────
     if (identity.paranoiaLevel === 'deadman') {
       const config         = paranoiaConfig.deadman;
       const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
@@ -300,8 +242,14 @@ router.post('/check', async (req: Request, res: Response) => {
 
       if (timeSince > deadmanTimerMs) {
         await killIdentity(identityId);
-      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Deadman timer expired — identity killed: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
-      await sendStealthFailure(res, 'DEADMAN_EXPIRED', identityId);
+        const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
+        fetch(`${dashUrl}/api/keys/event`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+          body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Deadman timer expired — identity killed: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
+          signal: AbortSignal.timeout(3000)
+        }).catch(() => {})
+        await sendStealthFailure(res, 'DEADMAN_EXPIRED', identityId);
         return;
       }
     }
@@ -312,28 +260,27 @@ router.post('/check', async (req: Request, res: Response) => {
     if (typeof identity.regenerationCount       === 'undefined') identity.regenerationCount       = 0;
     if (typeof identity.attemptsAfterRegenerate === 'undefined') identity.attemptsAfterRegenerate = 0;
 
-    // ── Feature extraction + AI analysis ────────────────────
     const features          = await extractFeatures(identity, clientIP, userAgent);
     await trackEndpoint(identityId, 'check');
     const aiAnalysis        = await analyzeWithAI(features);
     const railwayFeatures   = convertToRailwayFeatures(features);
-    const railwayAI         = await analyzeWithRailwayAI(railwayFeatures);
+    await analyzeWithRailwayAI(railwayFeatures);
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
     if (!validatedIdentity) {
-      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Invalid private key attempt on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
-      
-    // ── Timing protection — normaliza tempo de resposta ─────
-    const _elapsed = Date.now() - _reqStart
-    const _target = 80 + Math.random() * 40
-    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
-    await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
+      fetch(`${process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'}/api/keys/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+        body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Invalid private key attempt on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => {})
+      await normalizeResponseTime(reqStart, 80 + Math.random() * 40)
+      await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
       return;
     }
 
     const isValidSignature = validatedIdentity.isValidSignature;
 
-    // ── ALLOWED (assinatura válida) ──────────────────────────
     if (isValidSignature === true) {
       if (identity.paranoiaLevel === 'deadman') {
         const now = Date.now();
@@ -343,6 +290,10 @@ router.post('/check', async (req: Request, res: Response) => {
       identity.attempts                = 0;
       identity.attemptsAfterRegenerate = 0;
       await db.set(`identity:${identityId}`, identity);
+
+      if (rotatedToken) {
+        safeLog('[CHECK] Token rotated', { identityId })
+      }
 
       return res.json({
         success:  true,
@@ -356,7 +307,6 @@ router.post('/check', async (req: Request, res: Response) => {
       });
     }
 
-    // ── Falha de validação → avalia ação defensiva ───────────
     identity = await db.getIdentity(identityId);
     if (!identity) {
       await sendStealthFailure(res, 'NOT_FOUND', identityId);
@@ -398,66 +348,58 @@ router.post('/check', async (req: Request, res: Response) => {
     // ── KILL ─────────────────────────────────────────────────
     if (finalAction === DefensiveAction.KILL) {
       await killIdentity(identityId);
-      const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
-      fetch(`${dashUrl}/api/keys/event`, {
+      fetch(`${process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'}/api/keys/event`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
         body: JSON.stringify({ userId: identity.userId, type: 'ATTACK_BLOCKED', severity: 'CRITICAL', description: `Identity KILLED after attacks: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
         signal: AbortSignal.timeout(3000)
       }).catch(() => {})
-      
-    // ── Timing protection — normaliza tempo de resposta ─────
-    const _elapsed = Date.now() - _reqStart
-    const _target = 120 + Math.random() * 30
-    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
-    await sendStealthFailure(res, DefensiveAction.KILL, identityId);
+      await normalizeResponseTime(reqStart, 120 + Math.random() * 30)
+      await sendStealthFailure(res, DefensiveAction.KILL, identityId);
       return;
     }
 
     // ── LIE ──────────────────────────────────────────────────
     if (finalAction === DefensiveAction.LIE) {
-    // ── LIE INTELLIGENCE EVENT (interno — nunca vaza para o cliente) ──
-    const lieEvent = {
-      eventId: crypto.randomUUID(),
-      timestamp: Date.now(),
-      identityIdHash: require('crypto').createHash('sha256').update(identityId).digest('hex').slice(0, 16),
-      action: 'LIE',
-      lieStrategy: 'fake_success',
-      actor: {
-        ip: clientIP,
-        forwardedFor: req.headers['x-forwarded-for'] || null,
-        userAgent: userAgent || 'unknown',
-        device: /mobile/i.test(userAgent) ? 'mobile' : /bot|curl|python|go-http/i.test(userAgent) ? 'bot' : 'desktop',
-      },
-      context: {
-        attemptNumber: identity.attempts || 0,
-        totalAttempts: identity.totalAttempts || 0,
-        afterRegeneration: ((identity as any).regenerations || 0) > 0,
-        regenerations: (identity as any).regenerations || 0,
-      },
-      risk: {
-        level: (identity.attempts || 0) > 5 ? 'CRITICAL' : (identity.attempts || 0) > 3 ? 'HIGH' : 'MEDIUM',
-        score: Math.min(100, ((identity.attempts || 0) * 15) + (((identity as any).regenerations || 0) * 20)),
-      },
-      fingerprint: require('crypto').createHash('sha256').update(clientIP + (userAgent || '')).digest('hex').slice(0, 32),
-      decision: {
-        reason: 'tentativa suspeita — sistema aplicou deception',
-        nextAction: (identity.attempts || 0) >= 3 ? 'KILL' : 'MONITOR',
+      const lieEvent = {
+        eventId: crypto.randomUUID(),
+        timestamp: Date.now(),
+        identityIdHash: crypto.createHash('sha256').update(identityId).digest('hex').slice(0, 16),
+        action: 'LIE',
+        lieStrategy: 'fake_success',
+        actor: {
+          ip: clientIP,
+          forwardedFor: req.headers['x-forwarded-for'] || null,
+          userAgent: userAgent || 'unknown',
+          device: /mobile/i.test(userAgent) ? 'mobile' : /bot|curl|python|go-http/i.test(userAgent) ? 'bot' : 'desktop',
+        },
+        context: {
+          attemptNumber: identity.attempts || 0,
+          totalAttempts: identity.totalAttempts || 0,
+          afterRegeneration: (identity.regenerationCount || 0) > 0,
+          regenerations: identity.regenerationCount || 0,
+        },
+        risk: {
+          level: (identity.attempts || 0) > 5 ? 'CRITICAL' : (identity.attempts || 0) > 3 ? 'HIGH' : 'MEDIUM',
+          score: Math.min(100, ((identity.attempts || 0) * 15) + ((identity.regenerationCount || 0) * 20)),
+        },
+        fingerprint: crypto.createHash('sha256').update(clientIP + (userAgent || '')).digest('hex').slice(0, 32),
+        decision: {
+          reason: 'tentativa suspeita — sistema aplicou deception',
+          nextAction: (identity.attempts || 0) >= 3 ? 'KILL' : 'MONITOR',
+        }
       }
-    }
-    // Salva internamente no Redis (nunca exposto via API)
-    try {
-      const { db } = await import('../config/database')
-      await db.set(`lie_event:${lieEvent.eventId}`, lieEvent, 86400)
-    } catch (_) {}
-
-      { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Attack deceived [LIE] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
-      
-    // ── Timing protection — normaliza tempo de resposta ─────
-    const _elapsed = Date.now() - _reqStart
-    const _target = 120 + Math.random() * 30
-    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
-    await sendStealthFailure(res, DefensiveAction.LIE, identityId);
+      try {
+        await db.set(`lie_event:${lieEvent.eventId}`, lieEvent, 86400)
+      } catch {}
+      fetch(`${process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'}/api/keys/event`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+        body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'HIGH', description: `Attack deceived [LIE] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => {})
+      await normalizeResponseTime(reqStart, 120 + Math.random() * 30)
+      await sendStealthFailure(res, DefensiveAction.LIE, identityId);
       return;
     }
 
@@ -484,31 +426,25 @@ router.post('/check', async (req: Request, res: Response) => {
         newId: newIdentity.id,
       });
 
-      // ✅ Callback para dashboard registrar rotação
-      const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'
-      fetch(`${dashUrl}/api/keys/event`, {
+      fetch(`${process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'}/api/keys/event`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
         body: JSON.stringify({ userId: identity.userId || req.apiKey?.userId, type: 'IDENTITY_ROTATION', severity: 'MEDIUM', description: `Identity rotated: ${identityId} → ${newIdentity.id}`, blocked: false }),
         signal: AbortSignal.timeout(3000)
       }).catch(() => {})
-
-      
-    // ── Timing protection — normaliza tempo de resposta ─────
-    const _elapsed = Date.now() - _reqStart
-    const _target = 120 + Math.random() * 30
-    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
-    await sendStealthFailure(res, DefensiveAction.REGENERATE, identityId);
+      await normalizeResponseTime(reqStart, 120 + Math.random() * 30)
+      await sendStealthFailure(res, DefensiveAction.REGENERATE, identityId);
       return;
     }
 
     // ── ALLOW (falha simples) ─────────────────────────────────
-    { const _dashUrl = process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'; fetch(`${_dashUrl}/api/keys/event`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' }, body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'MEDIUM', description: `Failed attempt [ALLOW] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }), signal: AbortSignal.timeout(3000) }).catch(() => {}) }
-    
-    // ── Timing protection — normaliza tempo de resposta ─────
-    const _elapsed = Date.now() - _reqStart
-    const _target = 120 + Math.random() * 30
-    if (_elapsed < _target) await new Promise(r => setTimeout(r, _target - _elapsed))
+    fetch(`${process.env.DASHBOARD_URL || 'https://rekuway-dashboard.vercel.app'}/api/keys/event`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+      body: JSON.stringify({ userId: identity?.userId, type: 'ATTACK_BLOCKED', severity: 'MEDIUM', description: `Failed attempt [ALLOW] on identity: ${identityId}`, blocked: true, ipAddress: clientIP, userAgent, metadata: await getGeoAndVPN(clientIP) }),
+      signal: AbortSignal.timeout(3000)
+    }).catch(() => {})
+    await normalizeResponseTime(reqStart, 120 + Math.random() * 30)
     await sendStealthFailure(res, DefensiveAction.ALLOW, identityId);
 
   } catch (error) {
@@ -522,11 +458,9 @@ router.post('/check', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.post('/heartbeat', async (req: Request, res: Response) => {
   try {
-    const { identityId, privateKey } = req.body;
-
-    if (!identityId || !privateKey) {
-      return res.status(200).json(STEALTH_RESPONSE);
-    }
+    const parsed = parseBody(heartbeatSchema, req.body);
+    if (!parsed.success) return res.status(200).json(STEALTH_RESPONSE);
+    const { identityId, privateKey } = parsed.data;
 
     const identity = await db.getIdentity(identityId);
 
@@ -575,11 +509,9 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.post('/regenerate', async (req: Request, res: Response) => {
   try {
-    const { identityId, privateKey } = req.body;
-
-    if (!identityId || !privateKey) {
-      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
-    }
+    const parsed = parseBody(regenerateSchema, req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, error: "Invalid request body" });
+    const { identityId, privateKey } = parsed.data;
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
@@ -593,7 +525,6 @@ router.post('/regenerate', async (req: Request, res: Response) => {
       return res.status(500).json({ success: false, error: 'Failed to regenerate identity' });
     }
 
-    // ✅ STEALTH: token opaco — mesmo padrão do /identity/new
     const credentialToken = encodeCredentialToken(
       newIdentity.identity.id,
       newIdentity.privateKey
@@ -617,11 +548,9 @@ router.post('/regenerate', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.post('/kill', async (req: Request, res: Response) => {
   try {
-    const { identityId, privateKey } = req.body;
-
-    if (!identityId || !privateKey) {
-      return res.status(400).json({ success: false, error: 'identityId and privateKey are required' });
-    }
+    const parsed = parseBody(killSchema, req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, error: "Invalid request body" });
+    const { identityId, privateKey } = parsed.data;
 
     const validatedIdentity = await validateIdentity(identityId, privateKey);
 
@@ -648,13 +577,9 @@ router.post('/kill', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.get('/status/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const identity = await db.getIdentity(id);
-    if (!identity || !identity.isAlive) {
-      return res.status(200).json(STEALTH_RESPONSE);
-    }
+    await db.getIdentity(req.params.id);
     return res.status(200).json(STEALTH_RESPONSE);
-  } catch (error) {
+  } catch {
     return res.status(200).json(STEALTH_RESPONSE);
   }
 });

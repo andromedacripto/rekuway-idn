@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import identityRoutes from './routes/identityRoutes'
@@ -7,7 +7,7 @@ import verifyIdentityRouter from './routes/verify-identity';
 import apiKeyRoutes from './routes/apiKeyRoutes';
 import { requireApiKey } from './middleware/auth';
 import { startDeadmanMonitor } from './services/defensiveService';
-import crypto from 'crypto';
+import analyzeRoutes from './routes/analyzeRoutes';
 
 dotenv.config();
 
@@ -17,7 +17,7 @@ const app = express();
 app.disable('x-powered-by');
 
 // ── Middleware global de headers ──────────────────────────────
-app.use((req, res, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   res.removeHeader('x-powered-by');
   res.removeHeader('server');
   res.removeHeader('x-vercel-id');
@@ -39,7 +39,7 @@ const _redis = new Redis({
 const _RL_MAX = 10
 const _RL_WIN = 60
 
-app.use(async (req: any, res: any, next: any) => {
+app.use(async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ip = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
       .toString().split(',')[0].trim()
@@ -61,11 +61,11 @@ app.use(async (req: any, res: any, next: any) => {
 app.use(express.json());
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (req, res) => {
+app.get('/', (req: Request, res: Response) => {
   res.json({ status: 'ok', ts: Date.now() });
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', ts: Date.now() });
 });
 
@@ -73,7 +73,6 @@ app.get('/health', (req, res) => {
 app.use('/api-keys', apiKeyRoutes);
 app.use('/identity', identityRoutes)
 app.use('/internal', internalRoutes);
-const analyzeRoutes = require('./routes/analyzeRoutes').default;
 app.use('/analyze', analyzeRoutes);
 app.use('/api/verify-identity', requireApiKey, verifyIdentityRouter);
 
@@ -87,7 +86,7 @@ app.listen(PORT, () => {
 });
 
 // ── Catch-all para métodos não permitidos ─────────────────────
-app.use((req: any, res: any) => {
+app.use((req: Request, res: Response) => {
   res.status(200).json({ success: true, status: 'ok', mode: 'stealth' })
 })
 

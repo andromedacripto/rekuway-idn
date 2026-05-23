@@ -4,6 +4,7 @@
  */
 
 import { safeLog, safeError } from '../utils/sanitize';
+import { AIFeatures } from './ai-risk-types';
 
 const AI_SERVICE_URL =
   process.env.AI_SERVICE_URL || 'https://rekuway-idn-mvp-production.up.railway.app';
@@ -44,14 +45,14 @@ export interface RailwayAIResponse {
   };
 }
 
-export function convertToRailwayFeatures(aiFeatures: any): RailwayAIFeatures {
-  const timeSinceLastMs   = (aiFeatures.timeSinceLastAttempt || 0) * 1000;
-  const currentAttempts   = aiFeatures.currentAttempts   || 0;
-  const totalAttempts     = aiFeatures.totalAttempts     || 0;
-  const regenerations     = aiFeatures.regenerationCount || 0;
+export function convertToRailwayFeatures(aiFeatures: AIFeatures): RailwayAIFeatures {
+  const timeSinceLastMs    = (aiFeatures.timeSinceLastAttempt || 0) * 1000;
+  const currentAttempts    = aiFeatures.currentAttempts   || 0;
+  const totalAttempts      = aiFeatures.totalAttempts     || 0;
+  const regenerations      = aiFeatures.regenerationCount || 0;
   const attemptsAfterRegen = aiFeatures.attemptsAfterRegenerate || 0;
 
-  const failureRate        = totalAttempts > 0 ? currentAttempts / totalAttempts : 0;
+  const failureRate         = totalAttempts > 0 ? currentAttempts / totalAttempts : 0;
   const consecutiveFailures = currentAttempts;
 
   let velocityScore = 0.1;
@@ -71,9 +72,9 @@ export function convertToRailwayFeatures(aiFeatures: any): RailwayAIFeatures {
     failureRate * 0.3
   ));
 
-  const hasIPRotation         = (aiFeatures.uniqueIPs || 0) > 1;
-  const hasFingerprintChange  = aiFeatures.fingerprintChange ? 1 : 0;
-  const hasGeoChange          = aiFeatures.geolocationChange ? 1 : 0;
+  const hasIPRotation        = (aiFeatures.uniqueIPs || 0) > 1;
+  const hasFingerprintChange = aiFeatures.fingerprintChange ? 1 : 0;
+  const hasGeoChange         = aiFeatures.geolocationChange ? 1 : 0;
 
   const suspiciousPatternScore = (
     bruteForceScore * 0.4 +
@@ -113,13 +114,12 @@ export async function analyzeWithRailwayAI(
   features: RailwayAIFeatures
 ): Promise<RailwayAIResponse | null> {
   try {
-    // ✅ SEGURO: loga apenas métricas de features, nunca secrets
     safeLog('[RAILWAY_AI] 🚂 Calling Railway AI Service...', {
-      attempts:         features.attempt_count,
-      failureRate:      features.failure_rate.toFixed(2),
-      velocityScore:    features.velocity_score.toFixed(2),
-      bruteForceScore:  features.brute_force_score.toFixed(2),
-      suspiciousScore:  features.suspicious_pattern_score.toFixed(2),
+      attempts:        features.attempt_count,
+      failureRate:     features.failure_rate.toFixed(2),
+      velocityScore:   features.velocity_score.toFixed(2),
+      bruteForceScore: features.brute_force_score.toFixed(2),
+      suspiciousScore: features.suspicious_pattern_score.toFixed(2),
     });
 
     const startTime = Date.now();
@@ -134,14 +134,12 @@ export async function analyzeWithRailwayAI(
     const elapsed = Date.now() - startTime;
 
     if (!response.ok) {
-      // ✅ SEGURO: não loga o body completo da resposta de erro (pode conter dados sensíveis)
       safeError('[RAILWAY_AI] ❌ Error:', { status: response.status, elapsedMs: elapsed });
       return null;
     }
 
     const data = (await response.json()) as RailwayAIResponse;
 
-    // ✅ SEGURO: loga apenas resultados da análise
     safeLog('[RAILWAY_AI] ✅ Analysis complete:', {
       threatScore:       data.threatScore,
       recommendedAction: data.recommendedAction,
@@ -152,7 +150,6 @@ export async function analyzeWithRailwayAI(
 
     return data;
   } catch (error) {
-    // ✅ SEGURO: sanitize cuida do error object
     safeError('[RAILWAY_AI] ❌ Failed:', error);
     return null;
   }

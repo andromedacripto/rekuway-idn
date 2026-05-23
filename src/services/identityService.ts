@@ -5,12 +5,21 @@ import { generateKeyPair, hashValue, generateFakeMetadata } from '../utils/crypt
 import { safeLog, safeError } from '../utils/sanitize';
 import paranoiaConfig from '../config/paranoia.json';
 
+interface DeadmanConfig {
+  deadmanTimer?: number;
+  maxAttempts: number;
+  regenerateThreshold: number;
+  killThreshold: number;
+  ttl: number;
+  fakeFingerprintEnabled: boolean;
+}
+
 export async function createIdentity(
   paranoiaLevel: 'low' | 'medium' | 'high' | 'deadman' = 'medium'
 ): Promise<{ identity: Identity; privateKey: string }> {
   try {
     const { publicKey, privateKey } = generateKeyPair();
-    const config = paranoiaConfig[paranoiaLevel];
+    const config = paranoiaConfig[paranoiaLevel] as DeadmanConfig;
     const now = Date.now();
     const expiresAt = now + (config.ttl * 1000);
 
@@ -31,10 +40,9 @@ export async function createIdentity(
       isAlive: true,
       lastHeartbeat: paranoiaLevel === 'deadman' ? now : undefined,
       lastCheckIn: paranoiaLevel === 'deadman' ? now : undefined,
-      deadmanTimerSeconds: paranoiaLevel === 'deadman' ? (config as any).deadmanTimer : undefined,
+      deadmanTimerSeconds: paranoiaLevel === 'deadman' ? config.deadmanTimer : undefined,
     };
 
-    // ✅ SEGURO: loga apenas id, level e expiresAt — jamais privateKey ou hash completo
     safeLog(`[IDENTITY] Creating:`, {
       id: identity.id,
       paranoiaLevel,
@@ -45,9 +53,6 @@ export async function createIdentity(
 
     safeLog(`[IDENTITY] ✅ Created:`, { id: identity.id });
 
-    // privateKey é retornada para a camada de rota,
-    // que a repassa UMA ÚNICA VEZ na resposta HTTP.
-    // Ela NUNCA deve aparecer em logs.
     return { identity, privateKey };
   } catch (error) {
     safeError('[IDENTITY] ❌ Error creating identity:', error);
@@ -66,7 +71,6 @@ export async function regenerateIdentity(
       return null;
     }
 
-    // ✅ SEGURO: apenas IDs e contadores
     safeLog(`[IDENTITY] 🔄 Regenerating:`, {
       oldId: oldIdentityId,
       totalAttempts: oldIdentity.totalAttempts,
@@ -83,7 +87,6 @@ export async function regenerateIdentity(
 
     await db.setIdentity(newIdentity.id, newIdentity);
 
-    // ✅ SEGURO: log sem privateKey
     safeLog(`[IDENTITY] ✅ Regenerated:`, {
       oldId: oldIdentityId,
       newId: newIdentity.id,
@@ -107,7 +110,6 @@ export async function killIdentity(identityId: string): Promise<boolean> {
       return false;
     }
 
-    // ✅ SEGURO: contadores apenas, sem dados da identidade completa
     safeLog(`[IDENTITY] 💀 KILLING:`, {
       id: identityId,
       totalAttempts: identity.totalAttempts,
@@ -127,11 +129,6 @@ export async function killIdentity(identityId: string): Promise<boolean> {
   }
 }
 
-/**
- * ✅ Retorna identity com flag isValidSignature.
- * ✅ NÃO incrementa attempts (feito em identityRoutes.ts).
- * ✅ NUNCA loga privateKey ou o hash completo.
- */
 export async function validateIdentity(
   identityId: string,
   privateKey: string
@@ -146,7 +143,6 @@ export async function validateIdentity(
       return null;
     }
 
-    // ✅ SEGURO: loga estado interno sem expor hashes completos
     safeLog(`[IDENTITY] 📊 State:`, {
       id: identityId,
       isAlive: identity.isAlive,
@@ -167,11 +163,9 @@ export async function validateIdentity(
       return null;
     }
 
-    // ✅ VALIDAÇÃO CRIPTOGRÁFICA — hashes NUNCA vão para o log
     const providedHash = hashValue(privateKey);
     const isValidSignature = providedHash === identity.privateKeyHash;
 
-    // ✅ SEGURO: loga apenas o resultado booleano, nunca o hash
     safeLog(`[IDENTITY] 🔑 Hash match:`, { id: identityId, isValidSignature });
 
     if (!isValidSignature) {

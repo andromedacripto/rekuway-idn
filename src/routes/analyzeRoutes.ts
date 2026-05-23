@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 
 const router = Router();
 
-router.post('/', async (req: any, res: any) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const { features } = req.body;
     if (!features) return res.status(400).json({ error: 'features required' });
@@ -49,7 +49,7 @@ router.post('/', async (req: any, res: any) => {
         reasoning: 'threatScore=' + threatScore.toFixed(3) + ' action=' + recommendedAction,
       },
     });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Analysis failed' });
   }
 });

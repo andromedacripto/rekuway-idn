@@ -1,13 +1,10 @@
-import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { validateApiKey, checkRateLimit, incrementBlockedRequests, ApiKey } from '../services/apiKeyService';
-import { safeLog, safeError, safeWarn, sanitizeHeaders } from '../utils/sanitize';
+import { safeError, safeWarn, sanitizeHeaders } from '../utils/sanitize';
 
-declare global {
-  namespace Express {
-    interface Request {
-      apiKey?: ApiKey;
-    }
+declare module 'express-serve-static-core' {
+  interface Request {
+    apiKey?: ApiKey;
   }
 }
 

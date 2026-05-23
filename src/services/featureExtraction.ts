@@ -109,7 +109,7 @@ export async function trackEndpoint(
     }
 
     await db.set(key, JSON.stringify(sequence), 3600);
-  } catch (error) {
+  } catch {
     console.error('[FEATURES] Failed to track endpoint:', error);
   }
 }
@@ -128,7 +128,7 @@ async function getEndpointSequence(identityId: string): Promise<string[]> {
       }
     }
     return [];
-  } catch (error) {
+  } catch {
     return [];
   }
 }
@@ -155,7 +155,7 @@ async function trackClientIP(identityId: string, ip: string): Promise<void> {
     }
 
     await db.set(key, JSON.stringify(ips), 3600);
-  } catch (error) {
+  } catch {
     console.error('[FEATURES] Failed to track IP:', error);
   }
 }
@@ -174,7 +174,7 @@ async function getIPHistory(identityId: string): Promise<string[]> {
       }
     }
     return [];
-  } catch (error) {
+  } catch {
     return [];
   }
 }
@@ -186,7 +186,7 @@ async function trackFingerprint(
   try {
     const key = `fingerprint:${identityId}`;
     await db.set(key, JSON.stringify(fingerprint), 3600);
-  } catch (error) {
+  } catch {
     console.error('[FEATURES] Failed to track fingerprint:', error);
   }
 }
@@ -207,7 +207,7 @@ async function getLastFingerprint(
       }
     }
     return null;
-  } catch (error) {
+  } catch {
     return null;
   }
 }
@@ -219,7 +219,7 @@ async function trackGeolocation(
   try {
     const key = `geo:${identityId}`;
     await db.set(key, JSON.stringify(geo), 3600);
-  } catch (error) {
+  } catch {
     console.error('[FEATURES] Failed to track geolocation:', error);
   }
 }
@@ -240,7 +240,7 @@ async function getLastGeolocation(
       }
     }
     return null;
-  } catch (error) {
+  } catch {
     return null;
   }
 }

@@ -35,7 +35,7 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
-const IDENTITY_TTL          = 3600;
+const IDENTITY_TTL            = 3600;
 const MAX_SUSPICIOUS_ATTEMPTS = 3;
 
 const FAKE_IPS       = ['203.0.113.0', '198.51.100.42', '192.0.2.123', '203.0.113.255'];
@@ -70,14 +70,16 @@ function detectContextMismatch(
   return ipMismatch || deviceMismatch;
 }
 
-function validateRequest(body: any): { valid: boolean; error?: string; data?: VerifyIdentityRequest } {
+function validateRequest(body: unknown): { valid: boolean; error?: string; data?: VerifyIdentityRequest } {
   if (!body) return { valid: false, error: 'Request body is required' };
-  const { identityId, context } = body;
-  if (!identityId || typeof identityId !== 'string')              return { valid: false, error: 'identityId is required and must be a string' };
-  if (!context || typeof context !== 'object')                    return { valid: false, error: 'context is required and must be an object' };
-  if (!context.ip || typeof context.ip !== 'string')              return { valid: false, error: 'context.ip is required' };
-  if (!context.userAgent || typeof context.userAgent !== 'string') return { valid: false, error: 'context.userAgent is required' };
-  if (!context.device || typeof context.device !== 'string')      return { valid: false, error: 'context.device is required' };
+  const b = body as Record<string, unknown>;
+  const { identityId, context } = b;
+  if (!identityId || typeof identityId !== 'string')               return { valid: false, error: 'identityId is required and must be a string' };
+  if (!context || typeof context !== 'object')                     return { valid: false, error: 'context is required and must be an object' };
+  const ctx = context as Record<string, unknown>;
+  if (!ctx.ip || typeof ctx.ip !== 'string')                       return { valid: false, error: 'context.ip is required' };
+  if (!ctx.userAgent || typeof ctx.userAgent !== 'string')         return { valid: false, error: 'context.userAgent is required' };
+  if (!ctx.device || typeof ctx.device !== 'string')               return { valid: false, error: 'context.device is required' };
   return { valid: true, data: body as VerifyIdentityRequest };
 }
 
@@ -88,7 +90,6 @@ export async function verifyIdentity(req: Request, res: Response) {
     const validation = validateRequest(req.body);
 
     if (!validation.valid) {
-      // ✅ SEGURO: loga ip e erro, mas nunca o body completo (pode conter privateKey)
       safeError('[VERIFY] Validation failed:', {
         error:     validation.error,
         ip:        req.ip,
@@ -99,14 +100,13 @@ export async function verifyIdentity(req: Request, res: Response) {
 
     const { identityId, context } = validation.data!;
 
-    // ✅ SEGURO: loga apenas prefixo do ID (8 chars), nunca o ID completo ou privateKey
     safeLog('[VERIFY] Request received:', {
       idPrefix:  identityId.substring(0, 8) + '...',
       device:    context.device,
       timestamp: new Date().toISOString(),
     });
 
-    const redisKey    = `identity:${identityId}`;
+    const redisKey     = `identity:${identityId}`;
     const identityData = await redis.get<StoredIdentity>(redisKey);
 
     if (!identityData) {
@@ -180,7 +180,6 @@ export async function verifyIdentity(req: Request, res: Response) {
     }
 
   } catch (error) {
-    // ✅ SEGURO: sanitize remove qualquer dado sensível no error
     safeError('[VERIFY] Critical error:', {
       error:     error instanceof Error ? error.message : 'Unknown error',
       durationMs: Date.now() - startTime,
