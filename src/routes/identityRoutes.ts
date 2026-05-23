@@ -15,19 +15,17 @@ import { newIdentitySchema, checkIdentitySchema, heartbeatSchema, regenerateSche
 const router = Router();
 
 // ── Rate Limiting por IP ──────────────────────────────────────
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT_MAX = 10
-const RATE_LIMIT_WINDOW_MS = 60_000
-
-function checkRateLimit(ip: string): boolean {
-  const now = Date.now()
-  const entry = rateLimitMap.get(ip)
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
+const RATE_LIMIT_WINDOW_MS_S = 60
+async function checkRateLimit(ip: string): Promise<boolean> {
+  const key = `ratelimit:${ip}`
+  const entry = await db.get(key) as { count: number } | null
+  if (!entry) {
+    await db.set(key, { count: 1 }, RATE_LIMIT_WINDOW_MS_S)
     return true
   }
   if (entry.count >= RATE_LIMIT_MAX) return false
-  entry.count++
+  await db.set(key, { count: entry.count + 1 }, RATE_LIMIT_WINDOW_MS_S)
   return true
 }
 
