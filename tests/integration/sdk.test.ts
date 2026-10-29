@@ -194,4 +194,16 @@ describe('SDK contra a API real', () => {
     expect(await rk.kill(fresh!.identityId, fresh!.privateKey)).toBe(true);
     expect(await rk.kill(fresh!.identityId, fresh!.privateKey)).toBe(false); // já destruída
   }, 20000);
+
+  it('token antigo reapresentado (roubo) derruba a identidade e o SDK vê "denied"', async () => {
+    const rk = client(await apiKey(), nextIp());
+    const { session } = await rk.createSession('low');
+    const stale = session.token;
+    expect((await session.check()).status).toBe('allowed'); // troca o token
+    (h.store.get(`extused:${stale}`) as { at: number }).at -= 60_000;
+
+    const thief = new RekuwaySession(client(undefined, nextIp()), stale);
+    expect((await thief.check()).status).toBe('denied');
+    expect((await session.check()).status).toBe('denied'); // dono também perde: precisa de nova identidade
+  }, 20000);
 });

@@ -53,12 +53,13 @@ switch (r.status) {
 2. **Mostrar o MFA uma vez.** `mfa.secret` e `mfa.otpauthUri` só vêm na criação.
 3. **Tela de desafio.** Quando vier `step_up_required`, o usuário digita o código do autenticador. No nível `low` (sem MFA), `stepUp()` sem código só reapresenta a credencial.
 4. **Suporte.** Usuário que perdeu o autenticador: o seu dashboard chama `POST /internal/identities/{id}/unlock` com `x-internal-secret`.
-5. **Não use o status HTTP.** Falhas voltam 200 com um corpo uniforme. O SDK já traduz.
-6. **Deadman por token.** Quem só tem o token mantém a identidade viva chamando `check()` dentro do prazo (60 s no nível `deadman`).
+5. **`denied` depois de `allowed` = possível roubo.** Se um token que funcionava passa a ser negado, trate como incidente: peça uma identidade nova e investigue o evento `TOKEN_REUSE`. Chamadas **paralelas** com o mesmo token só são toleradas por 10 s após a troca; serialize as chamadas de uma mesma sessão (ou use um token por trabalhador).
+6. **Não use o status HTTP.** Falhas voltam 200 com um corpo uniforme. O SDK já traduz.
+7. **Deadman por token.** Quem só tem o token mantém a identidade viva chamando `check()` dentro do prazo (60 s no nível `deadman`).
 
 ## Eventos para o seu dashboard
 
-A API envia (`POST {DASHBOARD_URL}/api/keys/event`, header `x-internal-secret`) eventos como `SESSION_LOCKED`, `SESSION_BLOCKED`, `SESSION_KILLED`, `SESSION_UNLOCKED`, `ATTACK_BLOCKED` e `IDENTITY_ROTATION`. O seu dashboard deve **validar o `x-internal-secret`** e alertar a partir deles.
+A API envia (`POST {DASHBOARD_URL}/api/keys/event`, header `x-internal-secret`) eventos como `SESSION_LOCKED`, `SESSION_BLOCKED`, `SESSION_KILLED`, `SESSION_UNLOCKED`, `TOKEN_REUSE`, `ATTACK_BLOCKED` e `IDENTITY_ROTATION`. O seu dashboard deve **validar o `x-internal-secret`** e alertar a partir deles.
 
 ## Checklist de produção
 

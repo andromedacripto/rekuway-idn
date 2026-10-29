@@ -107,6 +107,7 @@ Detalhes que importam:
 - **Reautenticar** é apresentar `identityId` + `privateKey` (ou o token) de novo em `POST /identity/step-up` com o `challengeId`. Com MFA exigido, vai junto o código TOTP de 6 dígitos (RFC 6238, compatível com Google Authenticator e similares). Cada código só vale uma vez.
 - **Persistir piora.** Cada novo bloqueio dura o dobro do anterior (teto de 24 h). Ao fim de um bloqueio a sessão volta ao desafio, nunca ao acesso livre.
 - **Depois de um step-up válido** o IP e o dispositivo atuais viram a nova referência, e o motor não reavalia durante a carência.
+- **Roubo de token é detectado.** Cada uso troca o token. Se um token antigo reaparecer mais de 10 s depois da troca, existem duas cópias em mãos diferentes (o dono e um ladrão): a identidade é **destruída**, o dono é avisado (`TOKEN_REUSE`, severidade crítica) e quem apresentou o token velho recebe a resposta uniforme, sem saber de nada. Dentro dos 10 s o reuso é tratado como retry legítimo. O custo é que o dono precisa pedir uma identidade nova.
 - **MFA** é emitido na criação (`POST /identity/new` devolve `mfa.secret` e `mfa.otpauthUri` uma única vez) para os níveis `medium`, `high` e `deadman`. O segredo fica cifrado no Redis. Sem MFA cadastrado (identidades antigas), o step-up exige só reautenticação, que protege contra token roubado, mas não contra chave privada roubada.
 - **Suporte** libera uma sessão com `POST /internal/identities/:id/unlock` (`x-internal-secret`).
 

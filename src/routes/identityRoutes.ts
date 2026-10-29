@@ -22,6 +22,7 @@ import { isBlocked, isOverLimit, recordFailure } from '../utils/failureLimiter';
 import { generateTotpSecret, otpauthUri, verifyTotp } from '../utils/totp';
 import { safeEqualString } from '../utils/internalSecret';
 import { notifyDashboard } from '../services/dashboardEvents';
+import { handleTokenReuse, recordRotation } from '../services/tokenReuse';
 import {
   SessionRecord,
   SessionPolicy,
@@ -314,6 +315,16 @@ router.post('/check', async (req: Request, res: Response) => {
       } catch {}
     }
 
+    // Token já rotacionado sendo apresentado de novo: possível roubo. A resposta
+    // continua uniforme; o efeito (identidade destruída + alerta) é interno.
+    if (extToken && !identityId) {
+      try {
+        await handleTokenReuse(extToken, { ip: clientIP, userAgent: String(userAgent) });
+      } catch (error) {
+        safeError('[CHECK] Token reuse handling failed', error);
+      }
+    }
+
     if (!identityId || !privateKey) {
       await new Promise((r) => setTimeout(r, 80 + Math.floor(Math.random() * 40)));
       return res.status(200).json(STEALTH_RESPONSE);
@@ -476,6 +487,7 @@ router.post('/check', async (req: Request, res: Response) => {
             const ttlRem = Math.max(1, Math.floor((identity.expiresAt - Date.now()) / 1000));
             await db.set(`ext:${next}`, sealToken(plain, next), ttlRem);
             await db.set(`ext:${extToken}`, '', 1);
+            await recordRotation(extToken, identityId, identity.expiresAt);
             rotatedToken = next;
             safeLog('[CHECK] Token rotated', { identityId });
           }
@@ -926,6 +938,16 @@ router.post('/step-up', async (req: Request, res: Response) => {
         privateKey = decoded.privateKey;
       }
     }
+    if (extToken && !identityId) {
+      try {
+        await handleTokenReuse(extToken, {
+          ip: clientIP,
+          userAgent: String(req.headers['user-agent'] || ''),
+        });
+      } catch (error) {
+        safeError('[STEP-UP] Token reuse handling failed', error);
+      }
+    }
     if (!identityId || !privateKey) {
       await normalizeResponseTime(reqStart, 120 + Math.random() * 30);
       return res.status(200).json(STEALTH_RESPONSE);
@@ -1019,6 +1041,7 @@ router.post('/step-up', async (req: Request, res: Response) => {
     if (extToken) {
       newToken = await issueExternalToken(identityId, privateKey, identity.expiresAt);
       await db.set(`ext:${extToken}`, '', 1);
+      await recordRotation(extToken, identityId, identity.expiresAt);
     }
     safeLog('[SESSION] Step-up OK — session unlocked', { identityId });
     notifyDashboard({

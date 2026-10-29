@@ -551,3 +551,68 @@ describe('bloqueio de sessão', () => {
     expect(h.store.get(`session:${s.identityId}`)).toBeUndefined();
   });
 });
+
+// ───────────────────────────────────────────────────────────────
+//  Reuso de token rotacionado (roubo de token)
+// ───────────────────────────────────────────────────────────────
+describe('reuso de token rotacionado', () => {
+  async function twoChecks() {
+    const realIp = ip();
+    const key = await newApiKey(realIp);
+    const created = await newIdentity(key, realIp, 'low');
+    const id = [...h.store.keys()]
+      .filter((k) => k.startsWith('identity:'))
+      .pop()!
+      .slice(9);
+    const t1 = created.body.token as string;
+    const first = await request(app)
+      .post('/identity/check')
+      .set('x-real-ip', realIp)
+      .send({ token: t1 });
+    return { realIp, id, t1, t2: first.body.token as string };
+  }
+
+  it('reuso imediato (retry/paralelismo) é tolerado e não destrói nada', async () => {
+    const { realIp, id, t1, t2 } = await twoChecks();
+    const retry = await request(app)
+      .post('/identity/check')
+      .set('x-real-ip', realIp)
+      .send({ token: t1 });
+    expect(retry.body).toEqual({ success: true, status: 'ok', mode: 'stealth' });
+    expect(h.store.get(`identity:${id}`)).toBeDefined();
+    const ok = await request(app)
+      .post('/identity/check')
+      .set('x-real-ip', realIp)
+      .send({ token: t2 });
+    expect(ok.body.action).toBe('ALLOWED');
+  });
+
+  it('token antigo reapresentado depois da janela destrói a identidade e alerta', async () => {
+    const { realIp, id, t1, t2 } = await twoChecks();
+    // envelhece a lápide para além da janela de tolerância
+    (h.store.get(`extused:${t1}`) as { at: number }).at -= 60_000;
+    (globalThis.fetch as unknown as { mockClear: () => void }).mockClear();
+
+    const thief = await request(app)
+      .post('/identity/check')
+      .set('x-real-ip', ip())
+      .send({ token: t1 });
+    expect(thief.body).toEqual({ success: true, status: 'ok', mode: 'stealth' }); // não revela nada
+    expect(h.store.get(`identity:${id}`)).toBeUndefined();
+
+    // o token "novo" que o dono tinha também deixou de funcionar
+    const owner = await request(app)
+      .post('/identity/check')
+      .set('x-real-ip', realIp)
+      .send({ token: t2 });
+    expect(owner.body.action).toBeUndefined();
+
+    const calls = (globalThis.fetch as unknown as { mock: { calls: [string, { body: string }][] } })
+      .mock.calls;
+    const events = calls
+      .map(([, init]) => JSON.parse(init.body))
+      .filter((e) => e.type === 'TOKEN_REUSE');
+    expect(events).toHaveLength(1);
+    expect(events[0].severity).toBe('CRITICAL');
+  });
+});
