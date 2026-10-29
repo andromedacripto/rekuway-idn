@@ -7,6 +7,7 @@ import verifyIdentityRouter from './routes/verify-identity';
 import apiKeyRoutes from './routes/apiKeyRoutes';
 import { requireApiKey } from './middleware/auth';
 import analyzeRoutes from './routes/analyzeRoutes';
+import agentRoutes from './routes/agentRoutes';
 import { getClientIp } from './utils/clientIp';
 import { redis } from './config/redis';
 import { safeError } from './utils/sanitize';
@@ -60,6 +61,9 @@ function isFailClosedRoute(req: Request): boolean {
 }
 
 app.use(async (req: Request, res: Response, next: NextFunction) => {
+  // /agents é chamado pelo servidor do cliente (poucos IPs, muito tráfego): tem
+  // autenticação por chave de API e limite por plano próprios (middleware/agentAuth).
+  if (req.path.toLowerCase().startsWith('/agents')) return next();
   try {
     // IP definido pelo proxy confiável (X-Real-IP). Ver src/utils/clientIp.ts.
     const ip = getClientIp(req);
@@ -103,6 +107,7 @@ app.use('/api-keys', apiKeyRoutes);
 app.use('/identity', identityRoutes);
 app.use('/internal', internalRoutes);
 app.use('/analyze', analyzeRoutes);
+app.use('/agents', agentRoutes);
 app.use('/api/verify-identity', requireApiKey, verifyIdentityRouter);
 
 // ── Catch-all para métodos não permitidos ─────────────────────

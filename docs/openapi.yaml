@@ -16,6 +16,7 @@ servers:
 tags:
   - name: Identidade
   - name: Administração
+  - name: Agentes
 components:
   securitySchemes:
     apiKey:
@@ -274,6 +275,175 @@ paths:
       responses:
         '200': { description: '`{ checked, killed }`' }
         '401': { description: 'Não autorizado' }
+  /agents/approvers:
+    post:
+      tags: [Agentes]
+      summary: Cadastra quem aprova acessos (gera o MFA dele)
+      description: |
+        Rotas `/agents` são chamadas pelo servidor do cliente com a chave de API. Diferente das rotas
+        de identidade, os erros são explícitos: `{ ok:false, error:{ code, message } }` com HTTP coerente.
+      security: [{ apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approverId]
+              properties:
+                approverId: { type: string, pattern: '^[A-Za-z0-9_.@-]{1,64}$' }
+      responses:
+        '201': { description: 'Criado. `mfa.secret` e `mfa.otpauthUri` aparecem uma única vez.' }
+        '409': { description: Já existe }
+  /agents/access-requests:
+    post:
+      tags: [Agentes]
+      summary: O agente (ou a plataforma dele) pede acesso
+      security: [{ apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agentId, approverId, scopes]
+              properties:
+                agentId: { type: string }
+                approverId: { type: string }
+                scopes:
+                  type: array
+                  maxItems: 20
+                  items: { type: string, example: 'db:read' }
+                  description: 'recurso:ação; curinga só no final (`db:*`). Um `*` sozinho não existe.'
+                sensitiveScopes:
+                  type: array
+                  items: { type: string }
+                  description: Subconjunto de `scopes` que exige aprovação humana a cada uso.
+                ttlSeconds: { type: integer, minimum: 60, maximum: 86400, default: 3600 }
+                maxUses: { type: integer, minimum: 1 }
+                reason: { type: string, maxLength: 200 }
+      responses:
+        '201': { description: 'Pedido pendente (vale 10 minutos).' }
+        '400': { description: Pedido inválido }
+        '404': { description: Aprovador inexistente }
+  /agents/access-requests/{id}:
+    get:
+      tags: [Agentes]
+      summary: Estado do pedido (pending, approved, denied)
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Estado }
+        '404': { description: Não encontrado ou expirado }
+  /agents/access-requests/{id}/approve:
+    post:
+      tags: [Agentes]
+      summary: O humano aprova com o código do celular e o token do agente é emitido
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^\d{6}$' }
+      responses:
+        '200':
+          {
+            description: 'Aprovado. O `token` (`agt_…`) aparece uma única vez; só o hash dele é guardado.',
+          }
+        '403': { description: Código inválido ou já usado }
+        '409': { description: Pedido já decidido }
+        '429': { description: Aprovador travado por códigos errados }
+  /agents/access-requests/{id}/deny:
+    post:
+      tags: [Agentes]
+      summary: Nega o pedido
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Negado }
+  /agents/verify:
+    post:
+      tags: [Agentes]
+      summary: O agente pode fazer esta ação agora?
+      description: |
+        Chamado pelo servidor do cliente a cada uso do agente. O token é estável (não troca a cada uso),
+        então chamadas em paralelo funcionam. "Negado" não é erro HTTP: vem como `allowed:false` + `reason`
+        (`invalid_token`, `expired`, `revoked`, `scope_denied`, `rate_limited`, `limit_reached`,
+        `approval_required`, `approval_pending`, `approval_invalid`, `unavailable`).
+        Ação sensível sem aprovação devolve `approval_required` com um `approvalId`.
+      security: [{ apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, action]
+              properties:
+                token: { type: string }
+                action: { type: string, example: 'db:write' }
+                approvalId: { type: string, format: uuid }
+      responses:
+        '200': { description: 'Resultado: `{ ok:true, allowed, ... }`' }
+  /agents/approvals/{id}/approve:
+    post:
+      tags: [Agentes]
+      summary: O humano aprova uma ação sensível com o código do celular
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: '^\d{6}$' }
+      responses:
+        '200':
+          {
+            description: 'Aprovada. Vale uma única chamada de `/agents/verify` e expira em 5 minutos.',
+          }
+        '403': { description: Código inválido }
+  /agents/grants/{id}:
+    get:
+      tags: [Agentes]
+      summary: Estado do acesso concedido (active, expired, revoked)
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Resumo (nunca inclui o token) }
+        '404': { description: Não encontrado }
+  /agents/grants/{id}/audit:
+    get:
+      tags: [Agentes]
+      summary: Últimos usos (permitidos e negados) do acesso
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200': { description: 'Entradas, da mais nova para a mais antiga' }
+  /agents/grants/{id}/revoke:
+    post:
+      tags: [Agentes]
+      summary: Botão de pânico, o acesso acaba na hora
+      security: [{ apiKey: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Revogado }
   /health:
     get:
       summary: Liveness

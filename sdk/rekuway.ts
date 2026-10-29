@@ -62,7 +62,9 @@ export type StepUpResult =
 export class RekuwayError extends Error {
   constructor(
     message: string,
-    readonly httpStatus?: number
+    readonly httpStatus?: number,
+    /** Código da API (ex.: invalid_code, locked, not_found). */
+    readonly code?: string
   ) {
     super(message);
     this.name = 'RekuwayError';
@@ -105,6 +107,35 @@ export class Rekuway {
       json = {};
     }
     return isObj(json) ? json : {};
+  }
+
+  /** Modo agente: credenciais com escopo, aprovadas por um humano. Exige `apiKey`. */
+  readonly agents = new RekuwayAgents(this);
+
+  /** Chamada às rotas /agents (erros explícitos: `{ ok:false, error }`). Uso interno. */
+  async call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Json> {
+    if (!this.opts.apiKey) throw new RekuwayError('apiKey is required for agent access');
+    let res: Response;
+    try {
+      res = await this.doFetch(`${this.base}${path}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.opts.apiKey}`,
+          ...this.opts.headers,
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(this.opts.timeoutMs ?? 10_000),
+      });
+    } catch (error) {
+      throw new RekuwayError(`network error: ${(error as Error).message}`);
+    }
+    const json = (await res.json().catch(() => ({}))) as Json;
+    if (json.ok === false && isObj(json.error)) {
+      throw new RekuwayError(String(json.error.message), res.status, String(json.error.code));
+    }
+    if (!res.ok) throw new RekuwayError(`unexpected response (${res.status})`, res.status);
+    return json;
   }
 
   /** Cria uma identidade. Exige `apiKey`. */
@@ -246,4 +277,171 @@ function decodeBase64Url(input: string): string {
   const b64 = input.replace(/-/g, '+').replace(/_/g, '/');
   const bin = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
   return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+}
+
+// ───────────────────────────────────────────────────────────────
+//  Modo agente
+// ───────────────────────────────────────────────────────────────
+
+export type AgentDenyReason =
+  | 'invalid_token'
+  | 'expired'
+  | 'revoked'
+  | 'scope_denied'
+  | 'rate_limited'
+  | 'limit_reached'
+  | 'approval_required'
+  | 'approval_pending'
+  | 'approval_invalid'
+  | 'unavailable';
+
+export type AgentVerifyResult =
+  | {
+      allowed: true;
+      grantId: string;
+      agentId: string;
+      remainingUses: number | null;
+      expiresAt: number;
+    }
+  | { allowed: false; reason: AgentDenyReason; approvalId?: string; approvalExpiresAt?: number };
+
+export interface AgentGrant {
+  id: string;
+  agentId: string;
+  approverId: string;
+  scopes: string[];
+  sensitiveScopes: string[];
+  maxUses: number | null;
+  createdAt: number;
+  expiresAt: number;
+  status: 'active' | 'expired' | 'revoked';
+}
+
+export interface AccessRequestInput {
+  agentId: string;
+  approverId: string;
+  /** Ex.: ['db:read', 'files:*']. Curinga só no final; "*" sozinho não existe. */
+  scopes: string[];
+  /** Subconjunto de `scopes` que exige aprovação humana a cada uso. */
+  sensitiveScopes?: string[];
+  /** 60 a 86400 s. Padrão 3600. */
+  ttlSeconds?: number;
+  maxUses?: number;
+  reason?: string;
+}
+
+/**
+ * Fluxo: createApprover -> requestAccess -> (humano digita o código) approve
+ * -> o agente usa o token; o SEU servidor chama verify() a cada uso -> revoke().
+ * Estes métodos lançam RekuwayError (com `code`) em erros de uso; "negado" em
+ * verify() NÃO é erro: vem em { allowed: false, reason }.
+ */
+export class RekuwayAgents {
+  constructor(private readonly rk: Rekuway) {}
+
+  /** Cadastra quem aprova. Mostre `mfa` (QR do otpauthUri) uma única vez. */
+  async createApprover(approverId: string): Promise<{ approverId: string; mfa: MfaEnrollment }> {
+    const r = await this.rk.call('POST', '/agents/approvers', { approverId });
+    return { approverId: String(r.approverId), mfa: r.mfa as MfaEnrollment };
+  }
+
+  async requestAccess(
+    input: AccessRequestInput
+  ): Promise<{ requestId: string; expiresAt: number }> {
+    const r = await this.rk.call('POST', '/agents/access-requests', input);
+    return { requestId: String(r.requestId), expiresAt: Number(r.expiresAt) };
+  }
+
+  async getRequest(requestId: string) {
+    const r = await this.rk.call('GET', `/agents/access-requests/${requestId}`);
+    return {
+      requestId: String(r.requestId),
+      status: r.status as 'pending' | 'approved' | 'denied',
+      grantId: (r.grantId as string | null) ?? null,
+    };
+  }
+
+  /** O humano aprova com o código do celular. O token só aparece aqui, uma vez. */
+  async approve(requestId: string, code: string): Promise<{ token: string; grant: AgentGrant }> {
+    const r = await this.rk.call('POST', `/agents/access-requests/${requestId}/approve`, { code });
+    return { token: String(r.token), grant: r.grant as AgentGrant };
+  }
+
+  async deny(requestId: string): Promise<void> {
+    await this.rk.call('POST', `/agents/access-requests/${requestId}/deny`, {});
+  }
+
+  /** O agente pode executar `action` agora? Chame a cada uso, no seu servidor. */
+  async verify(token: string, action: string, options: { approvalId?: string } = {}) {
+    const r = await this.rk.call('POST', '/agents/verify', { token, action, ...options });
+    const result = { ...r };
+    delete result.ok;
+    return result as unknown as AgentVerifyResult;
+  }
+
+  /** O humano aprova uma ação sensível pendente com o código do celular. */
+  async approveAction(approvalId: string, code: string) {
+    const r = await this.rk.call('POST', `/agents/approvals/${approvalId}/approve`, { code });
+    return { action: String(r.action), grantId: String(r.grantId) };
+  }
+
+  async getGrant(grantId: string): Promise<AgentGrant> {
+    return (await this.rk.call('GET', `/agents/grants/${grantId}`)).grant as AgentGrant;
+  }
+
+  async audit(grantId: string, limit = 50) {
+    const r = await this.rk.call('GET', `/agents/grants/${grantId}/audit?limit=${limit}`);
+    return r.entries as Array<{
+      at: number;
+      action: string;
+      result: 'allowed' | 'denied';
+      reason?: string;
+    }>;
+  }
+
+  /** Botão de pânico: o acesso do agente acaba na hora. */
+  async revoke(grantId: string): Promise<void> {
+    await this.rk.call('POST', `/agents/grants/${grantId}/revoke`, {});
+  }
+}
+
+// ── Middleware (Express e similares) ──────────────────────────
+interface GuardReq {
+  headers: Record<string, string | string[] | undefined>;
+  agent?: { grantId: string; agentId: string };
+}
+interface GuardRes {
+  status(code: number): GuardRes;
+  json(body: unknown): unknown;
+}
+
+/**
+ * Protege uma rota do SEU servidor: só passa se o agente (token `agt_…` no
+ * header Authorization) tem permissão para `action`.
+ *   - ação sensível sem aprovação: 202 { error:'approval_required', approvalId }
+ *   - o agente repete a chamada com o header `x-approval-id` depois que o humano aprovar
+ */
+export function agentGuard(rk: Rekuway, action: string) {
+  return async (req: GuardReq, res: GuardRes, next: () => void) => {
+    const auth = String(req.headers.authorization ?? '');
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return res.status(401).json({ error: 'missing_token' });
+    const approvalId = String(req.headers['x-approval-id'] ?? '') || undefined;
+    let result: AgentVerifyResult;
+    try {
+      result = await rk.agents.verify(token, action, { approvalId });
+    } catch {
+      return res.status(503).json({ error: 'access_check_unavailable' }); // na dúvida, nega
+    }
+    if (result.allowed) {
+      req.agent = { grantId: result.grantId, agentId: result.agentId };
+      return next();
+    }
+    if (result.reason === 'approval_required' || result.reason === 'approval_pending') {
+      return res.status(202).json({ error: result.reason, approvalId: result.approvalId });
+    }
+    const status =
+      result.reason === 'invalid_token' ? 401 : result.reason === 'rate_limited' ? 429 : 403;
+    return res.status(status).json({ error: result.reason });
+  };
 }

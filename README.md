@@ -210,11 +210,36 @@ if (r.status === 'step_up_required') await session.stepUp(codigoDoAutenticador);
 
 ---
 
+## Modo agente (agentes de IA)
+
+Para dar a um agente de IA um acesso **curto, com escopo e aprovado por uma pessoa**:
+
+1. O dono cadastra quem aprova (`approver`) e recebe o QR do autenticador.
+2. O agente (ou a plataforma dele) **pede acesso** dizendo o que precisa (`db:read`, `files:*`...), por quanto tempo e quantas vezes.
+3. A pessoa **aprova com o código do celular**. Só então sai o token `agt_…` do agente.
+4. **A cada uso**, o seu servidor pergunta à Rekuway `POST /agents/verify` ("este agente pode fazer `db:write` agora?").
+5. Ações marcadas como **sensíveis** (`sensitiveScopes`) pedem uma aprovação humana nova, válida para **uma única chamada**.
+6. A qualquer momento, `revoke` encerra o acesso na hora. Cada uso, permitido ou negado, fica na trilha de auditoria.
+
+```ts
+const { mfa } = await rk.agents.createApprover('maria');          // QR para a Maria, uma vez
+const { requestId } = await rk.agents.requestAccess({
+  agentId: 'assistente-financeiro', approverId: 'maria',
+  scopes: ['db:read', 'db:write'], sensitiveScopes: ['db:write'], ttlSeconds: 3600,
+});
+const { token } = await rk.agents.approve(requestId, codigoDaMaria); // o agente recebe o token
+
+app.get('/orders', agentGuard(rk, 'db:read'), handler);            // protege a rota
+```
+
+Diferenças em relação às identidades humanas: o token é **estável** (várias chamadas em paralelo funcionam), o risco **não** é medido por IP ou navegador (agentes mudam de IP o tempo todo) e os erros são **explícitos** para o agente saber o que fazer. Ver [`docs/INTEGRATION.md`](docs/INTEGRATION.md#agentes-de-ia).
+
 ## API
 
 | Método | Rota                    | Auth                    | Função                                       |
 | ------ | ----------------------- | ----------------------- | -------------------------------------------- |
 | `POST` | `/api-keys`, `GET /api-keys/:userId`, `DELETE /api-keys/:hash` | `x-internal-secret` | Administração de chaves de API (só o dashboard). |
+| `POST` | `/agents/*`             | `Authorization: Bearer` (chave de API) | Modo agente: aprovadores, pedidos, `verify`, aprovação de ação sensível, auditoria e revogação. Contrato em `docs/openapi.yaml`. |
 | `POST` | `/identity/new`         | `Authorization: Bearer` | Cria uma identidade e devolve um token.       |
 | `POST` | `/identity/check`       | token ou chave privada  | Valida e aplica o motor de defesa.            |
 | `POST` | `/identity/step-up`     | token ou chave privada + `challengeId` (+ `code` TOTP) | Reautentica e destrava a sessão. |
@@ -272,6 +297,7 @@ Todas as variáveis estão em [`.env.example`](.env.example).
 | `INTERNAL_SECRET`                                 | sim         | Autentica `/internal/*` e as chamadas ao dashboard.           |
 | `ALLOWED_ORIGINS`                                 | não         | Origens de navegador permitidas, separadas por vírgula.       |
 | `AI_SERVICE_URL`, `AI_SERVICE_TOKEN`              | não         | Ligam a IA consultiva. Sem elas, só regras.                   |
+| `AGENT_RATE_PER_MINUTE`                           | não         | Limite de usos por minuto de cada acesso de agente. Padrão 120. |
 | `AI_SERVICE_TIMEOUT_MS`                           | não         | Timeout da chamada de IA. Padrão 3000.                        |
 | `TOKEN_ENCRYPTION_KEY`                            | recomendada | 64 hex. Criptografa tokens no Redis. Sem ela, deriva de `INTERNAL_SECRET`. |
 | `CRON_SECRET`                                     | não         | Autoriza o Vercel Cron em `/internal/deadman-sweep`.          |

@@ -47,6 +47,40 @@ switch (r.status) {
 }
 ```
 
+## Agentes de IA
+
+Para entregar a um agente de IA um acesso **curto, limitado e aprovado por uma pessoa**. O fluxo e os endpoints estão no README e em `openapi.yaml`; aqui, o que muda no seu produto:
+
+```ts
+// 1. Uma vez por pessoa que aprova: mostre o QR (mfa.otpauthUri) e guarde o approverId.
+const { mfa } = await rk.agents.createApprover('maria');
+
+// 2. O agente pede acesso. A pessoa recebe o pedido na sua tela.
+const { requestId } = await rk.agents.requestAccess({
+  agentId: 'assistente-financeiro', approverId: 'maria',
+  scopes: ['db:read', 'db:write'], sensitiveScopes: ['db:write'],
+  ttlSeconds: 3600, maxUses: 500, reason: 'fechamento do mês',
+});
+
+// 3. A pessoa digita o código do celular na SUA tela. O token vai para o agente.
+const { token, grant } = await rk.agents.approve(requestId, codigoDigitado);
+
+// 4. No seu servidor, em cada rota que o agente pode chamar:
+app.get('/orders',  agentGuard(rk, 'db:read'),  listOrders);
+app.post('/orders', agentGuard(rk, 'db:write'), createOrder);
+```
+
+Quando a ação é **sensível**, o `agentGuard` responde `202 { error:'approval_required', approvalId }`. Mostre à pessoa "o agente quer fazer `db:write`", ela aprova com o código (`rk.agents.approveAction(approvalId, codigo)`) e o agente repete a chamada com o header `x-approval-id`. A aprovação vale **uma** chamada e expira em 5 minutos.
+
+Boas práticas:
+- **Escopos mínimos e prazo curto.** `db:read` por 1 hora é melhor que `db:*` por 24 horas.
+- **Guarde só o `grant.id`**; o token sai uma vez e a Rekuway guarda apenas o hash dele.
+- **Painel de revogação:** ofereça um botão que chama `rk.agents.revoke(grant.id)`.
+- **Trilha de auditoria:** `rk.agents.audit(grant.id)` lista os usos permitidos e negados.
+- **Aprovação por código:** cada código do celular só vale uma vez (muda a cada 30 s). Duas aprovações seguidas pedem dois códigos diferentes.
+
+O que o modo agente **não** faz: não mede risco por IP (agentes mudam de IP o tempo todo), e o token é um segredo de portador: se vazar, vale até o prazo ou a revogação. Escopo, prazo, limite de usos e `revoke` limitam o estrago, mas não o impedem.
+
 ## O que seu produto precisa tratar
 
 1. **Guardar o token novo.** A cada `allowed` o token muda. `RekuwaySession` faz isso; se você chamar a API direto, guarde o `token` da resposta.
@@ -71,6 +105,9 @@ A API envia (`POST {DASHBOARD_URL}/api/keys/event`, header `x-internal-secret`) 
 - [ ] Histórico do git limpo e credenciais antigas trocadas.
 
 ## Limites conhecidos
+
+- **Identidades humanas: de onde vem o IP?** O risco por IP e navegador usa o IP de quem chama a Rekuway. Se o seu **servidor** chama `/identity/check` em nome do usuário, a Rekuway vê o IP do servidor, não o do usuário, e o sinal de "IP novo" perde o valor. Hoje isso só funciona bem quando o **navegador** chama a Rekuway direto, ou se você repassar o contexto do usuário, o que ainda não foi implementado. O modo agente não depende disso.
+- **Auditoria dos agentes:** cada `verify` grava um registro por 30 dias. Para volumes muito altos, isso consome memória do Redis; ainda não foi medido.
 
 - A IA é **consultiva** e foi treinada e medida só com dados sintéticos. As regras decidem.
 - Nada aqui foi medido em carga. Não publique números de latência ou capacidade sem benchmark próprio.
