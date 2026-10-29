@@ -251,6 +251,10 @@ A cada `/identity/check` bem-sucedido por token, o token é **rotacionado**: a r
 
 O relatório de testes e correções está em [PENTEST.md](PENTEST.md) (versão 2.1). Ele separa o que foi testado em produção do que foi corrigido por revisão de código.
 
+### Segredos
+
+O hook de pre-commit e o CI rodam `scripts/secret-scan.mjs` na árvore e em todo o histórico. Veja [`SECURITY.md`](SECURITY.md).
+
 ### Divulgação responsável
 
 Encontrou uma vulnerabilidade? **Não abra uma issue pública.** Use *Security → Report a vulnerability* na aba do repositório no GitHub para enviar um relato privado.
@@ -333,7 +337,7 @@ Configure as variáveis acima nos dois ambientes. Em cada ambiente, `INTERNAL_SE
 
 ## Roadmap
 
-- [ ] Reescrever o histórico do git e rotacionar as credenciais que já foram versionadas
+- [x] Histórico do git reescrito sem os segredos (verificado por scanner); falta publicar com `git push --force` e rotacionar as credenciais antigas (veja `SECURITY.md`)
 - [ ] Treinar e validar o detector com tráfego real (hoje só dados sintéticos)
 - [ ] Limites de taxa por plano de API
 - [ ] Teste de intrusão por terceiros

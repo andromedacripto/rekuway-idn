@@ -70,7 +70,8 @@ const isBinary = (buf) => buf.subarray(0, 8000).includes(0);
 const MAX_BYTES = 2_000_000;
 
 function report(where, findings) {
-  for (const f of findings) console.error(`  ${where}${f.line ? `:${f.line}` : ''}  ${f.type}  ${f.sample}`);
+  for (const f of findings)
+    console.error(`  ${where}${f.line ? `:${f.line}` : ''}  ${f.type}  ${f.sample}`);
   return findings.length;
 }
 
@@ -101,8 +102,8 @@ function scanHistory() {
     input: objs.map(([id]) => id).join('\n') + '\n',
     encoding: 'utf8',
     maxBuffer: 1 << 28,
-  }).stdout
-    .split('\n')
+  })
+    .stdout.split('\n')
     .map((l) => l.split(' '));
   const blobIds = new Set(types.filter(([, t]) => t === 'blob').map(([id]) => id));
   let total = 0;
@@ -111,7 +112,8 @@ function scanHistory() {
     if (!blobIds.has(id) || seen.has(id)) continue;
     seen.add(id);
     const nameIssue = scanFileName(path);
-    if (nameIssue) total += report(`${path} @${id.slice(0, 8)}`, [{ line: 0, type: nameIssue, sample: '' }]);
+    if (nameIssue)
+      total += report(`${path} @${id.slice(0, 8)}`, [{ line: 0, type: nameIssue, sample: '' }]);
     const buf = spawnSync('git', ['cat-file', 'blob', id], { maxBuffer: 1 << 28 }).stdout;
     if (!buf || buf.length > MAX_BYTES || isBinary(buf)) continue;
     total += report(`${path} @${id.slice(0, 8)}`, scanText(buf.toString('utf8'), path));
@@ -123,7 +125,9 @@ function main() {
   const mode = process.argv[2] || '--all';
   let total = 0;
   if (mode === '--staged') {
-    const files = git('diff', '--cached', '--name-only', '--diff-filter=ACM').split('\n').filter(Boolean);
+    const files = git('diff', '--cached', '--name-only', '--diff-filter=ACM')
+      .split('\n')
+      .filter(Boolean);
     total = scanFiles(files, (f) => execFileSync('git', ['show', `:${f}`], { maxBuffer: 1 << 28 }));
   } else if (mode === '--history') {
     total = scanHistory();
@@ -131,7 +135,9 @@ function main() {
     total = scanFiles(git('ls-files').split('\n').filter(Boolean), (f) => readFileSync(f));
   }
   if (total > 0) {
-    console.error(`\nsecret-scan: ${total} achado(s) (${mode}). Remova o segredo, troque a credencial e use variável de ambiente.`);
+    console.error(
+      `\nsecret-scan: ${total} achado(s) (${mode}). Remova o segredo, troque a credencial e use variável de ambiente.`
+    );
     process.exit(1);
   }
   console.log(`secret-scan: nada encontrado (${mode}).`);
