@@ -4,7 +4,7 @@
 
 ### Identity Deadman Network
 
-**Identidades temporárias que se defendem, enganam o atacante e se autodestroem.**
+**Identidades temporárias que se defendem, travam quando o uso é suspeito e se autodestroem.**
 
 [![CI](https://github.com/andromedacripto/rekuway-idn-mvp/actions/workflows/ci.yml/badge.svg)](https://github.com/andromedacripto/rekuway-idn-mvp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -65,7 +65,7 @@ flowchart LR
 | ------------ | ---------------------------------------------------------------------- |
 | `ALLOW`      | Registra a falha e responde de forma uniforme.                          |
 | `REGENERATE` | Destrói a identidade e cria outra, preservando os contadores do ataque. |
-| `LIE`        | Devolve uma resposta de sucesso falsa e registra o evento de deception. |
+| `LIE`        | Registra o evento como ataque confirmado (com contexto do atacante) e responde de forma uniforme. Não devolve dados falsos. |
 | `KILL`       | Destrói a identidade de forma definitiva.                               |
 
 Depois de uma regeneração, a 1ª falha vira `LIE` e a 2ª vira `KILL`, em qualquer nível.
@@ -241,7 +241,7 @@ A cada `/identity/check` bem-sucedido por token, o token é **rotacionado**: a r
 | Segredos internos      | `validateInternalSecret()` com SHA-256 + `timingSafeEqual`. Sem `INTERNAL_SECRET`, tudo é recusado. |
 | CORS                   | Somente origens de `ALLOWED_ORIGINS`. Vazio significa nenhuma origem de navegador.                |
 | Serviço de IA          | `POST /analyze` exige o header `X-AI-Service-Token`, comparado em tempo constante.                |
-| Criptografia           | Par RSA de 2048 bits por identidade. A chave privada é entregue uma única vez.                    |
+| Criptografia           | Par RSA de 2048 bits gerado por identidade. A chave privada é entregue uma única vez e só o hash SHA-256 dela fica guardado; a validação compara esse hash (a chave pública não é usada para verificar assinaturas). |
 | Tokens em repouso      | O token que carrega a chave privada é criptografado no Redis com AES-256-GCM (`TOKEN_ENCRYPTION_KEY`), preso ao identificador do token. |
 | Sessão                 | Credencial válida com risco (IP novo, dispositivo novo, falhas anteriores, IA) trava a sessão: exige reautenticação e MFA por nível; se persistir, bloqueia (e destrói o `deadman`). |
 | Credenciais            | `heartbeat`, `regenerate` e `kill` têm limite por IP e por identidade, respondem de forma uniforme e falham fechado. Comparações de segredo e de hash são em tempo constante. |
