@@ -1,0 +1,149 @@
+# Fluxo de CI do projeto. Para ativar no GitHub, copie este arquivo para
+# .github/workflows/ci.yml (pelo site do GitHub: Add file > Create new file).
+# O Arc Studio não consegue enviar arquivos dessa pasta; por isso ele fica aqui.
+name: CI — Security & Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Scanner de segredos (árvore e histórico completo)
+        run: |
+          node scripts/secret-scan.mjs --all
+          node scripts/secret-scan.mjs --history
+
+      - name: Prettier (formatação)
+        run: npx prettier --check "src/**/*.ts" "tests/**/*.ts" "sdk/**/*.ts" vitest.config.ts
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npx eslint src/ tests/ sdk/
+
+      - name: Testes unitários
+        run: npm test
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+      # Só roda se o segredo SNYK_TOKEN existir no repositório (senão o passo é ignorado).
+      - name: Snyk test
+        if: ${{ env.SNYK_TOKEN != '' }}
+        run: npx snyk test
+
+      - name: Rekuway IDN Security Audit
+        run: |
+          node -e "
+          const fs = require('fs');
+          const CHECKS = [
+            {
+              name: 'identityRoutes — stealth response uniforme',
+              file: 'src/routes/identityRoutes.ts',
+              must:    ['STEALTH_RESPONSE', 'stealthDelay'],
+              mustNot: []
+            },
+            {
+              name: 'identityRoutes — dashboard webhook com INTERNAL_SECRET',
+              file: 'src/routes/identityRoutes.ts',
+              must:    ['x-internal-secret', 'INTERNAL_SECRET', 'DASHBOARD_URL'],
+              mustNot: []
+            },
+            {
+              name: 'auth middleware — sem vazamento de info',
+              file: 'src/middleware/auth.ts',
+              must:    ['AUTH_FAIL', 'nonLinearJitter'],
+              mustNot: []
+            },
+            {
+              name: 'identityService — killIdentity implementado',
+              file: 'src/services/identityService.ts',
+              must:    ['killIdentity', 'isAlive = false'],
+              mustNot: []
+            },
+            {
+              name: 'defensiveService — deadman monitor',
+              file: 'src/services/defensiveService.ts',
+              must:    ['startDeadmanMonitor', 'checkDeadmanSwitch'],
+              mustNot: []
+            },
+            {
+              name: 'internalRoutes — x-internal-secret validado em tempo constante (fail-closed)',
+              file: 'src/routes/internalRoutes.ts',
+              must:    ['x-internal-secret', 'validateInternalSecret'],
+              mustNot: ['!== process.env.INTERNAL_SECRET']
+            },
+          ];
+
+          let failed = 0;
+
+          for (const c of CHECKS) {
+            if (!fs.existsSync(c.file)) {
+              console.error('❌ MISSING  ' + c.name + ' — file not found: ' + c.file);
+              failed++;
+              continue;
+            }
+            const ct = fs.readFileSync(c.file, 'utf8');
+            const bad1 = (c.must    || []).filter(m => !ct.includes(m));
+            const bad2 = (c.mustNot || []).filter(m =>  ct.includes(m));
+            if (!bad1.length && !bad2.length) {
+              console.log('✅ PASS     ' + c.name);
+            } else {
+              if (bad1.length) console.error('❌ FAIL     ' + c.name + ' — missing: ' + bad1.join(', '));
+              if (bad2.length) console.error('❌ FAIL     ' + c.name + ' — found (should not exist): ' + bad2.join(', '));
+              failed++;
+            }
+          }
+
+          if (failed > 0) {
+            console.error('\n❌ ' + failed + ' security check(s) failed — deploy blocked');
+            process.exit(1);
+          }
+
+          console.log('\n✅ All security checks passed');
+          "
+
+  ai-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instala dependências do ai-service
+        run: pip install -r ai-service/requirements.txt pytest
+
+      - name: Testes do ai-service
+        working-directory: ai-service
+        run: python -m pytest -q test_api.py
+
+      - name: Avaliação do modelo (dados sintéticos)
+        working-directory: ai-service
+        run: python evaluate.py

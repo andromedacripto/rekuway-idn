@@ -6,7 +6,7 @@
 
 **Identidades temporárias que se defendem, travam quando o uso é suspeito e se autodestroem.**
 
-[![CI](https://github.com/andromedacripto/rekuway-idn-mvp/actions/workflows/ci.yml/badge.svg)](https://github.com/andromedacripto/rekuway-idn-mvp/actions/workflows/ci.yml)
+[![CI](https://github.com/andromedacripto/rekuway-idn/actions/workflows/ci.yml/badge.svg)](https://github.com/andromedacripto/rekuway-idn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
@@ -150,8 +150,8 @@ Estes números valem apenas para o gerador sintético. Não são uma medida de d
 ### Rodando a API
 
 ```bash
-git clone https://github.com/andromedacripto/rekuway-idn-mvp.git
-cd rekuway-idn-mvp
+git clone https://github.com/andromedacripto/rekuway-idn.git
+cd rekuway-idn
 npm ci
 
 cp .env.example .env     # preencha os valores; nunca versione o .env
