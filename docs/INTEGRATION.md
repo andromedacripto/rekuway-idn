@@ -81,6 +81,24 @@ Boas práticas:
 
 O que o modo agente **não** faz: não mede risco por IP (agentes mudam de IP o tempo todo), e o token é um segredo de portador: se vazar, vale até o prazo ou a revogação. Escopo, prazo, limite de usos e `revoke` limitam o estrago, mas não o impedem.
 
+## Chamando do seu servidor: repasse o contexto do usuário
+
+O risco por "IP novo" e "navegador diferente" usa o IP e o navegador de **quem chama a Rekuway**. Se o seu **servidor** chama em nome do usuário, a Rekuway só veria o IP do servidor. Por isso:
+
+```ts
+const rk = new Rekuway({ baseUrl, apiKey: process.env.RKWY_API_KEY });   // chave de API: só no servidor
+const result = await session.check({
+  ip: req.ip,                              // IP do usuário final (o do SEU servidor web, atrás do seu proxy confiável)
+  userAgent: req.headers['user-agent'],
+});
+```
+
+- O SDK envia `Authorization: Bearer <chave>` e os cabeçalhos `x-end-user-ip` e `x-end-user-user-agent`. **Sem chave de API válida esses cabeçalhos são ignorados** (qualquer um poderia forjá-los).
+- **O limite deixa de ser por IP.** Com a chave, o tráfego conta contra o limite do seu **plano**; sem ela, vale 10 requisições por minuto por IP. Um backend inteiro sai de poucos IPs, então use a chave.
+- **Se você não repassar o contexto**, o IP considerado é o do seu servidor e o sinal de "IP novo" não dispara (as outras defesas continuam).
+- Você é responsável pela veracidade do IP que repassa: use o IP que o **seu** proxy confiável informa, nunca um cabeçalho que o usuário controla.
+- Se a chamada vier direto do **navegador do usuário**, não use a chave de API (ela vazaria): chame sem chave e o IP real é o da conexão.
+
 ## O que seu produto precisa tratar
 
 1. **Guardar o token novo.** A cada `allowed` o token muda. `RekuwaySession` faz isso; se você chamar a API direto, guarde o `token` da resposta.
@@ -106,7 +124,6 @@ A API envia (`POST {DASHBOARD_URL}/api/keys/event`, header `x-internal-secret`) 
 
 ## Limites conhecidos
 
-- **Identidades humanas: de onde vem o IP?** O risco por IP e navegador usa o IP de quem chama a Rekuway. Se o seu **servidor** chama `/identity/check` em nome do usuário, a Rekuway vê o IP do servidor, não o do usuário, e o sinal de "IP novo" perde o valor. Hoje isso só funciona bem quando o **navegador** chama a Rekuway direto, ou se você repassar o contexto do usuário, o que ainda não foi implementado. O modo agente não depende disso.
 - **Auditoria dos agentes:** cada `verify` grava um registro por 30 dias. Para volumes muito altos, isso consome memória do Redis; ainda não foi medido.
 
 - A IA é **consultiva** e foi treinada e medida só com dados sintéticos. As regras decidem.

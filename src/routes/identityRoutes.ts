@@ -16,7 +16,7 @@ import { extractFeatures, trackEndpoint } from '../services/featureExtraction';
 import { analyzeWithAI } from '../services/aiClient';
 import { analyzeWithRailwayAI, convertToRailwayFeatures } from '../services/railwayAiClient';
 import { combineDecisionsV3, computeRuleBasedAction } from '../services/decisionEngine';
-import { getClientIp } from '../utils/clientIp';
+import { callerIp, callerUserAgent, isServerWithoutEndUserIp } from '../middleware/serverCaller';
 import { sealToken, openToken } from '../utils/tokenVault';
 import { isBlocked, isOverLimit, recordFailure } from '../utils/failureLimiter';
 import { generateTotpSecret, otpauthUri, verifyTotp } from '../utils/totp';
@@ -60,8 +60,16 @@ const LIMIT_WINDOW_S = 60;
  * Bloqueia por IP (tentativas) e por identidade (falhas): sem isso elas eram
  * um oráculo de chave privada fora do motor de defesa.
  */
-async function credentialRouteBlocked(route: string, ip: string, identityId: string) {
-  if (await isOverLimit(`credrl:${route}:${ip}`, CRED_ROUTE_LIMIT_PER_IP, LIMIT_WINDOW_S)) {
+async function credentialRouteBlocked(
+  route: string,
+  ip: string,
+  identityId: string,
+  skipIpLimit = false
+) {
+  if (
+    !skipIpLimit &&
+    (await isOverLimit(`credrl:${route}:${ip}`, CRED_ROUTE_LIMIT_PER_IP, LIMIT_WINDOW_S))
+  ) {
     return true;
   }
   return isBlocked(`credfail:${identityId}`, CRED_FAILURES_PER_IDENTITY);
@@ -282,9 +290,13 @@ router.post(
 // ─────────────────────────────────────────────
 router.post('/check', async (req: Request, res: Response) => {
   const reqStart = Date.now();
-  const clientIP = getClientIp(req);
+  const clientIP = callerIp(req);
 
-  if (await isOverLimit(`rl:check:${clientIP}`, CHECK_LIMIT_PER_IP, LIMIT_WINDOW_S)) {
+  // Servidor autenticado sem IP de usuário: o IP é do servidor; o limite é o do plano.
+  if (
+    !isServerWithoutEndUserIp(req) &&
+    (await isOverLimit(`rl:check:${clientIP}`, CHECK_LIMIT_PER_IP, LIMIT_WINDOW_S))
+  ) {
     return res.status(200).json(STEALTH_RESPONSE);
   }
 
@@ -296,7 +308,7 @@ router.post('/check', async (req: Request, res: Response) => {
     }
 
     const { token: extToken } = parsed.data;
-    const userAgent = req.headers['user-agent'] || '';
+    const userAgent = callerUserAgent(req);
 
     let identityId: string = parsed.data.identityId || '';
     let privateKey: string = parsed.data.privateKey || '';
@@ -757,7 +769,14 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
     if (!parsed.success) return res.status(200).json(STEALTH_RESPONSE);
     const { identityId, privateKey } = parsed.data;
 
-    if (await credentialRouteBlocked('heartbeat', getClientIp(req), identityId)) {
+    if (
+      await credentialRouteBlocked(
+        'heartbeat',
+        callerIp(req),
+        identityId,
+        isServerWithoutEndUserIp(req)
+      )
+    ) {
       return credentialFailure(res, identityId, reqStart);
     }
 
@@ -784,7 +803,7 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
 
     // Heartbeat de um IP novo é o caminho de quem roubou a credencial para manter
     // a identidade viva: o motor trava a sessão em vez de renovar o prazo.
-    const heartbeatIp = getClientIp(req);
+    const heartbeatIp = callerIp(req);
     const trustedIps = await getTrustedIps(identityId);
     const hbRisk = computeRisk({
       priorFailures: 0,
@@ -844,7 +863,14 @@ router.post('/regenerate', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Invalid request body' });
     const { identityId, privateKey } = parsed.data;
 
-    if (await credentialRouteBlocked('regenerate', getClientIp(req), identityId)) {
+    if (
+      await credentialRouteBlocked(
+        'regenerate',
+        callerIp(req),
+        identityId,
+        isServerWithoutEndUserIp(req)
+      )
+    ) {
       return credentialFailure(res, identityId, reqStart);
     }
 
@@ -889,7 +915,9 @@ router.post('/kill', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Invalid request body' });
     const { identityId, privateKey } = parsed.data;
 
-    if (await credentialRouteBlocked('kill', getClientIp(req), identityId)) {
+    if (
+      await credentialRouteBlocked('kill', callerIp(req), identityId, isServerWithoutEndUserIp(req))
+    ) {
       return credentialFailure(res, identityId, reqStart);
     }
 
@@ -918,7 +946,7 @@ router.post('/kill', async (req: Request, res: Response) => {
 // ─────────────────────────────────────────────
 router.post('/step-up', async (req: Request, res: Response) => {
   const reqStart = Date.now();
-  const clientIP = getClientIp(req);
+  const clientIP = callerIp(req);
   try {
     const parsed = parseBody(stepUpSchema, req.body);
     if (!parsed.success) {
@@ -942,7 +970,7 @@ router.post('/step-up', async (req: Request, res: Response) => {
       try {
         await handleTokenReuse(extToken, {
           ip: clientIP,
-          userAgent: String(req.headers['user-agent'] || ''),
+          userAgent: callerUserAgent(req),
         });
       } catch (error) {
         safeError('[STEP-UP] Token reuse handling failed', error);
@@ -953,7 +981,9 @@ router.post('/step-up', async (req: Request, res: Response) => {
       return res.status(200).json(STEALTH_RESPONSE);
     }
 
-    if (await credentialRouteBlocked('stepup', clientIP, identityId)) {
+    if (
+      await credentialRouteBlocked('stepup', clientIP, identityId, isServerWithoutEndUserIp(req))
+    ) {
       return credentialFailure(res, identityId, reqStart);
     }
 

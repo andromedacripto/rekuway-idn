@@ -204,6 +204,7 @@ const r = await session.check();
 if (r.status === 'step_up_required') await session.stepUp(codigoDoAutenticador);
 ```
 
+- Chamando do **servidor** do seu produto, repasse o IP e o navegador do usuário (`session.check({ ip, userAgent })`) para o risco funcionar e para o limite ser o do seu plano, não o de 10 requisições por minuto por IP. Detalhes em [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 - Contrato HTTP completo: [`docs/openapi.yaml`](docs/openapi.yaml) (validado).
 - Casos de uso, tratamento dos estados e checklist de produção: [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 - O SDK é testado contra a API real em `tests/integration/sdk.test.ts`.

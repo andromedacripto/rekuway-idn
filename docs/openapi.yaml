@@ -18,6 +18,19 @@ tags:
   - name: Administração
   - name: Agentes
 components:
+  parameters:
+    EndUserIp:
+      name: x-end-user-ip
+      in: header
+      required: false
+      description: IP do usuário final. Só é considerado com uma chave de API válida em `Authorization`; sem ela é ignorado.
+      schema: { type: string, example: 203.0.113.7 }
+    EndUserUserAgent:
+      name: x-end-user-user-agent
+      in: header
+      required: false
+      description: Navegador do usuário final (até 256 caracteres). Mesma regra do IP.
+      schema: { type: string }
   securitySchemes:
     apiKey:
       type: http
@@ -117,6 +130,9 @@ paths:
                   - $ref: '#/components/schemas/Stealth'
   /identity/check:
     post:
+      parameters:
+        - $ref: '#/components/parameters/EndUserIp'
+        - $ref: '#/components/parameters/EndUserUserAgent'
       tags: [Identidade]
       summary: Valida a credencial e aplica o motor de defesa
       description: |
@@ -140,6 +156,9 @@ paths:
                   - $ref: '#/components/schemas/Stealth'
   /identity/step-up:
     post:
+      parameters:
+        - $ref: '#/components/parameters/EndUserIp'
+        - $ref: '#/components/parameters/EndUserUserAgent'
       tags: [Identidade]
       summary: Reautentica e destrava uma sessão travada
       requestBody:
@@ -170,6 +189,9 @@ paths:
                   - $ref: '#/components/schemas/Stealth'
   /identity/heartbeat:
     post:
+      parameters:
+        - $ref: '#/components/parameters/EndUserIp'
+        - $ref: '#/components/parameters/EndUserUserAgent'
       tags: [Identidade]
       summary: Renova o prazo de uma identidade deadman
       description: Recusado (resposta uniforme) se a sessão estiver travada. Identidades usadas só por token renovam o prazo a cada `/identity/check`.
@@ -187,6 +209,9 @@ paths:
         '200': { description: 'Sucesso (`identity` presente) ou resposta uniforme' }
   /identity/regenerate:
     post:
+      parameters:
+        - $ref: '#/components/parameters/EndUserIp'
+        - $ref: '#/components/parameters/EndUserUserAgent'
       tags: [Identidade]
       summary: Troca a identidade por uma nova
       requestBody:
@@ -203,6 +228,9 @@ paths:
         '200': { description: 'Credencial nova (`token`, `exp`, `lvl`) ou resposta uniforme' }
   /identity/kill:
     post:
+      parameters:
+        - $ref: '#/components/parameters/EndUserIp'
+        - $ref: '#/components/parameters/EndUserUserAgent'
       tags: [Identidade]
       summary: Destrói a identidade (sempre permitido a quem tem a chave)
       requestBody:

@@ -39,6 +39,17 @@ export interface IdentitySummary {
   expiresAt: number;
 }
 
+/**
+ * Contexto do usuário final. Use quando o SEU SERVIDOR chama a Rekuway em nome
+ * de um usuário: sem isso a Rekuway enxerga o IP e o navegador do seu servidor,
+ * e o risco por "IP novo" ou "navegador diferente" perde o valor.
+ * Só é considerado quando o cliente foi criado com `apiKey`.
+ */
+export interface EndUserContext {
+  ip?: string;
+  userAgent?: string;
+}
+
 export type Credentials = { token: string } | { identityId: string; privateKey: string };
 
 export type CheckResult =
@@ -84,7 +95,12 @@ export class Rekuway {
     this.doFetch = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  private async post(path: string, body: unknown, bearer?: string): Promise<Json> {
+  private async post(
+    path: string,
+    body: unknown,
+    bearer?: string,
+    context?: EndUserContext
+  ): Promise<Json> {
     let res: Response;
     try {
       res = await this.doFetch(`${this.base}${path}`, {
@@ -92,6 +108,8 @@ export class Rekuway {
         headers: {
           'Content-Type': 'application/json',
           ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+          ...(bearer && context?.ip ? { 'x-end-user-ip': context.ip } : {}),
+          ...(bearer && context?.userAgent ? { 'x-end-user-user-agent': context.userAgent } : {}),
           ...this.opts.headers,
         },
         body: JSON.stringify(body),
@@ -161,20 +179,22 @@ export class Rekuway {
     return { session: new RekuwaySession(this, token), expiresAt, mfa };
   }
 
-  async check(credentials: Credentials): Promise<CheckResult> {
-    return parseCheck(await this.post('/identity/check', credentials));
+  async check(credentials: Credentials, context?: EndUserContext): Promise<CheckResult> {
+    return parseCheck(await this.post('/identity/check', credentials, this.opts.apiKey, context));
   }
 
   async stepUp(
     credentials: Credentials,
     challengeId: string,
-    code?: string
+    code?: string,
+    context?: EndUserContext
   ): Promise<StepUpResult> {
-    const body = await this.post('/identity/step-up', {
-      ...credentials,
-      challengeId,
-      ...(code ? { code } : {}),
-    });
+    const body = await this.post(
+      '/identity/step-up',
+      { ...credentials, challengeId, ...(code ? { code } : {}) },
+      this.opts.apiKey,
+      context
+    );
     if (body.action === 'STEP_UP_FAILED') {
       return { status: 'failed', remainingAttempts: Number(body.remainingAttempts) };
     }
@@ -182,14 +202,28 @@ export class Rekuway {
   }
 
   /** Renova o prazo de uma identidade `deadman` (exige a chave privada). */
-  async heartbeat(identityId: string, privateKey: string): Promise<boolean> {
-    const body = await this.post('/identity/heartbeat', { identityId, privateKey });
+  async heartbeat(
+    identityId: string,
+    privateKey: string,
+    context?: EndUserContext
+  ): Promise<boolean> {
+    const body = await this.post(
+      '/identity/heartbeat',
+      { identityId, privateKey },
+      this.opts.apiKey,
+      context
+    );
     return body.success === true && isObj(body.identity);
   }
 
   /** Troca por uma identidade nova. Devolve a credencial (guarde-a). */
-  async regenerate(identityId: string, privateKey: string) {
-    const body = await this.post('/identity/regenerate', { identityId, privateKey });
+  async regenerate(identityId: string, privateKey: string, context?: EndUserContext) {
+    const body = await this.post(
+      '/identity/regenerate',
+      { identityId, privateKey },
+      this.opts.apiKey,
+      context
+    );
     if (typeof body.token !== 'string' || body.mode === 'stealth') return null;
     const payload = JSON.parse(decodeBase64Url(body.token)) as { i: string; k: string };
     return {
@@ -201,8 +235,13 @@ export class Rekuway {
   }
 
   /** Destrói a identidade. `true` só se a API confirmou. */
-  async kill(identityId: string, privateKey: string): Promise<boolean> {
-    const body = await this.post('/identity/kill', { identityId, privateKey });
+  async kill(identityId: string, privateKey: string, context?: EndUserContext): Promise<boolean> {
+    const body = await this.post(
+      '/identity/kill',
+      { identityId, privateKey },
+      this.opts.apiKey,
+      context
+    );
     return body.success === true && body.mode === undefined;
   }
 }
@@ -224,17 +263,21 @@ export class RekuwaySession {
     return this.current;
   }
 
-  async check(): Promise<CheckResult> {
-    const result = await this.client.check({ token: this.current });
+  async check(context?: EndUserContext): Promise<CheckResult> {
+    const result = await this.client.check({ token: this.current }, context);
     if (result.status === 'allowed' && result.token) this.current = result.token;
     if (result.status === 'step_up_required') this.lastChallenge = result.challengeId;
     return result;
   }
 
   /** Responde ao desafio pendente com o código do autenticador. */
-  async stepUp(code?: string, challengeId = this.lastChallenge): Promise<StepUpResult> {
+  async stepUp(
+    code?: string,
+    challengeId = this.lastChallenge,
+    context?: EndUserContext
+  ): Promise<StepUpResult> {
     if (!challengeId) throw new RekuwayError('no pending challenge: call check() first');
-    const result = await this.client.stepUp({ token: this.current }, challengeId, code);
+    const result = await this.client.stepUp({ token: this.current }, challengeId, code, context);
     if (result.status === 'allowed') {
       if (result.token) this.current = result.token;
       this.lastChallenge = undefined;

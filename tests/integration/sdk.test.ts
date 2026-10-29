@@ -206,4 +206,16 @@ describe('SDK contra a API real', () => {
     expect((await thief.check()).status).toBe('denied');
     expect((await session.check()).status).toBe('denied'); // dono também perde: precisa de nova identidade
   }, 20000);
+
+  it('servidor repassa o contexto do usuário: IP novo trava, e sem contexto não', async () => {
+    const rk = client(await apiKey(), nextIp());
+    const { session } = await rk.createSession('medium');
+    expect((await session.check({ ip: '203.0.113.50', userAgent: 'UA-A' })).status).toBe('allowed');
+    const risky = await session.check({ ip: '203.0.113.77', userAgent: 'UA-A' });
+    expect(risky.status).toBe('step_up_required');
+
+    const other = await client(await apiKey(), nextIp()).createSession('medium');
+    expect((await other.session.check()).status).toBe('allowed');
+    expect((await other.session.check()).status).toBe('allowed');
+  }, 20000);
 });

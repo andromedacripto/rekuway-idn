@@ -8,6 +8,8 @@ import apiKeyRoutes from './routes/apiKeyRoutes';
 import { requireApiKey } from './middleware/auth';
 import analyzeRoutes from './routes/analyzeRoutes';
 import agentRoutes from './routes/agentRoutes';
+import { resolveServerCaller } from './middleware/serverCaller';
+import { checkRateLimit } from './services/apiKeyService';
 import { getClientIp } from './utils/clientIp';
 import { redis } from './config/redis';
 import { safeError } from './utils/sanitize';
@@ -45,6 +47,9 @@ app.use(
   })
 );
 
+// Chave de API válida em /identity/*: servidor do cliente falando em nome de um usuário.
+app.use('/identity', resolveServerCaller);
+
 // ── Rate Limiting Global por IP (Redis) ──────────────────────
 const _RL_MAX = 10;
 const _RL_WIN = 60;
@@ -65,6 +70,17 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
   // autenticação por chave de API e limite por plano próprios (middleware/agentAuth).
   if (req.path.toLowerCase().startsWith('/agents')) return next();
   try {
+    // Servidor do cliente autenticado: o limite é o do plano da chave, não o do IP
+    // (um backend inteiro sai de poucos IPs). /identity/new já aplica o plano no próprio middleware.
+    if (req.serverCaller) {
+      if (req.path.toLowerCase().replace(/\/+$/, '') !== '/identity/new') {
+        const plan = await checkRateLimit(req.serverCaller.apiKey, false);
+        if (!plan.allowed) {
+          return res.status(200).json({ success: true, status: 'ok', mode: 'stealth' });
+        }
+      }
+      return next();
+    }
     // IP definido pelo proxy confiável (X-Real-IP). Ver src/utils/clientIp.ts.
     const ip = getClientIp(req);
     const key = `rl:${ip}`;
