@@ -13,6 +13,9 @@ Rodada de correções de segurança e novas defesas. Detalhes e limites em `PENT
 - CORS por lista de origens (`ALLOWED_ORIGINS`) na API e no serviço de IA; token interno para `/analyze`.
 - `heartbeat`, `regenerate` e `kill` respondem de forma uniforme e têm limite por IP e por identidade.
 
+### Correção
+- `ai-service/model.py`: `_detect_environment()` sempre devolvia "desenvolvimento", então em produção o reforço de ataque distribuído e a penalização de `fingerprint_reuse` ficavam desligados. Agora vale `ENVIRONMENT`; ausente ou desconhecido conta como produção. Detecção sintética em limiar 0.70 passou de 63 % para 82,6 %.
+
 ### Novas defesas
 - Trava de sessão por nível de paranoia, com desafio MFA (TOTP) e bloqueio progressivo.
 - Detecção de reuso de token rotacionado (sinal de roubo): a identidade é destruída e o dono é avisado.

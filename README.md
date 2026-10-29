@@ -132,8 +132,10 @@ Um teste automatizado compara as chaves enviadas pelo cliente TypeScript com as 
 | Limiar de score | Falso positivo | Detecção |
 | --------------- | -------------- | -------- |
 | 0.50            | 8,8 %          | 100 %    |
-| 0.70            | 0 %            | 63 %     |
-| 0.85            | 0 %            | 15,6 %   |
+| 0.70            | 0 %            | 82,6 %   |
+| 0.85            | 0 %            | 27,0 %   |
+
+Medido em modo **produção** (o padrão). Em `ENVIRONMENT=development` o detector desliga o reforço de ataque distribuído e a penalização de reuso de fingerprint, e a detecção cai para 63 % (limiar 0.70) e 15,6 % (0.85). Até a versão 2.1.0 o detector ficava sempre em modo desenvolvimento por um erro de código; foi corrigido.
 
 Estes números valem apenas para o gerador sintético. Não são uma medida de desempenho com tráfego real, e o modelo ainda não foi avaliado fora desses dados.
 
@@ -306,7 +308,7 @@ Todas as variáveis estão em [`.env.example`](.env.example).
 | `DASHBOARD_URL`                                   | não         | Destino dos eventos de segurança.                             |
 | `PORT`                                            | não         | Porta HTTP. Padrão 3000.                                      |
 
-No `ai-service`: `AI_SERVICE_TOKEN` (obrigatória, sem ela o serviço responde 503), `ALLOWED_ORIGINS`, `MODEL_SHA256` (opcional: só carrega o modelo com este hash) e `AI_THRESHOLD_REGENERATE` / `_LIE` / `_KILL`.
+No `ai-service`: `ENVIRONMENT` (use `development` só em máquina local; ausente ou qualquer outro valor conta como produção), `AI_SERVICE_TOKEN` (obrigatória, sem ela o serviço responde 503), `ALLOWED_ORIGINS`, `MODEL_SHA256` (opcional: só carrega o modelo com este hash) e `AI_THRESHOLD_REGENERATE` / `_LIE` / `_KILL`.
 
 ---
 

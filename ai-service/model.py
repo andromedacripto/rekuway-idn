@@ -59,13 +59,15 @@ class AnomalyDetectorV2:
     
     def _detect_environment(self) -> bool:
         """
-        Detecta se está em desenvolvimento (localhost) ou produção
-        Permite ajustes automáticos de sensibilidade
+        True só quando ENVIRONMENT indica desenvolvimento explicitamente
+        (development, dev, local ou test). Qualquer outro valor, ou a variável
+        ausente, conta como PRODUÇÃO: se alguém esquecer de configurar, as
+        defesas ficam ligadas (booster de ataque distribuído e penalização de
+        fingerprint_reuse), nunca desligadas.
         """
-        # TODO: Implementar detecção via env var
-        # Por ora, assume desenvolvimento
-        return True
-    
+        env = os.getenv("ENVIRONMENT", "production").strip().lower()
+        return env in {"development", "dev", "local", "test"}
+
     def _create_default_model(self):
         """Cria modelo padrão"""
         self.model = IsolationForest(
