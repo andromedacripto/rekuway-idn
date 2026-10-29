@@ -1,6 +1,6 @@
 /**
  * AI Risk Analysis Types
- * 
+ *
  * Contratos imutáveis para IA defensiva observadora.
  * A IA NUNCA executa ações, apenas fornece insights.
  */
@@ -23,7 +23,7 @@ export interface AIRiskAnalysis {
 }
 
 export interface ThreatPattern {
-  pattern: 
+  pattern:
     | 'brute_force'
     | 'credential_stuffing'
     | 'replay_attack'
@@ -37,7 +37,7 @@ export interface ThreatPattern {
 }
 
 export interface GovernanceRecommendation {
-  type: 
+  type:
     | 'paranoia_level_increase'
     | 'identity_at_risk'
     | 'client_anomaly'

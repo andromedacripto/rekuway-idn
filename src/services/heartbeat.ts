@@ -14,8 +14,8 @@ export async function checkDeadmanTimers(): Promise<void> {
     const keys = await db.keys('identity:*');
     if (!keys || keys.length === 0) return;
 
-    const now        = Date.now();
-    let killedCount  = 0;
+    const now = Date.now();
+    let killedCount = 0;
     let checkedCount = 0;
 
     for (const key of keys) {
@@ -25,33 +25,37 @@ export async function checkDeadmanTimers(): Promise<void> {
 
         checkedCount++;
 
-        const config            = paranoiaConfig.deadman;
-        const deadmanTimerMs    = (config.deadmanTimer || 60) * 1000;
-        const lastHeartbeat     = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
+        const config = paranoiaConfig.deadman;
+        const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
+        const lastHeartbeat = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
         const timeSinceHeartbeat = now - lastHeartbeat;
 
         if (timeSinceHeartbeat > deadmanTimerMs) {
           safeLog(`[DEADMAN] 💀 KILLING:`, {
-            id:           identity.id,
+            id: identity.id,
             timeSinceSec: Math.floor(timeSinceHeartbeat / 1000),
-            reason:       'Deadman timer expired',
+            reason: 'Deadman timer expired',
           });
 
           await killIdentity(identity.id);
 
-          await db.set(`event:${now}:${identity.id}`, {
-            timestamp:           new Date(now).toISOString(),
-            action:              'KILLED',
-            identityId:          identity.id,
-            reason:              'Deadman timer expired',
-            timeSinceHeartbeat:  Math.floor(timeSinceHeartbeat / 1000),
-          }, 3600);
+          await db.set(
+            `event:${now}:${identity.id}`,
+            {
+              timestamp: new Date(now).toISOString(),
+              action: 'KILLED',
+              identityId: identity.id,
+              reason: 'Deadman timer expired',
+              timeSinceHeartbeat: Math.floor(timeSinceHeartbeat / 1000),
+            },
+            3600
+          );
 
           killedCount++;
         } else {
           const remainingSec = Math.floor((deadmanTimerMs - timeSinceHeartbeat) / 1000);
           safeLog(`[DEADMAN] ⏳ Alive:`, {
-            id:           identity.id.substring(0, 8) + '...',
+            id: identity.id.substring(0, 8) + '...',
             remainingSec,
           });
         }
@@ -74,7 +78,9 @@ export function startDeadmanMonitor(): void {
   safeLog('[DEADMAN] 🚀 Starting monitor (10s interval)...');
   checkDeadmanTimers();
 
-  const interval = setInterval(() => { checkDeadmanTimers(); }, 10000);
+  const interval = setInterval(() => {
+    checkDeadmanTimers();
+  }, 10000);
   if (interval.unref) interval.unref();
 
   safeLog('[DEADMAN] 💓 Monitor ACTIVE!');
@@ -82,7 +88,7 @@ export function startDeadmanMonitor(): void {
 
 export async function updateHeartbeat(identityId: string): Promise<boolean> {
   try {
-    const key      = `identity:${identityId}`;
+    const key = `identity:${identityId}`;
     const identity = (await db.get(key)) as Identity | null;
 
     if (!identity || !identity.isAlive) {
@@ -95,9 +101,9 @@ export async function updateHeartbeat(identityId: string): Promise<boolean> {
       return false;
     }
 
-    const now             = Date.now();
+    const now = Date.now();
     identity.lastHeartbeat = now;
-    identity.lastCheckIn  = now;
+    identity.lastCheckIn = now;
 
     await db.set(key, identity);
 

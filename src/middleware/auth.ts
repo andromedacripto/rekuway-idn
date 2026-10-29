@@ -1,6 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
-import { validateApiKey, checkRateLimit, incrementBlockedRequests, ApiKey } from '../services/apiKeyService';
+import {
+  validateApiKey,
+  checkRateLimit,
+  incrementBlockedRequests,
+  ApiKey,
+} from '../services/apiKeyService';
 import { safeError, safeWarn, sanitizeHeaders } from '../utils/sanitize';
+import { getClientIp } from '../utils/clientIp';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -11,10 +17,7 @@ declare module 'express-serve-static-core' {
 // ─────────────────────────────────────────────
 //  HONEYPOT KEYS
 // ─────────────────────────────────────────────
-const HONEYPOT_KEYS = new Set([
-  'rkwy_live_honeypot_001',
-  'rkwy_live_honeypot_002',
-]);
+const HONEYPOT_KEYS = new Set(['rkwy_live_honeypot_001', 'rkwy_live_honeypot_002']);
 
 // ─────────────────────────────────────────────
 //  RESPOSTA NORMALIZADA
@@ -27,11 +30,11 @@ const AUTH_FAIL = Object.freeze({ success: true, status: 'ok', mode: 'stealth' }
 //  TIMING — jitter não-linear (80–220ms)
 // ─────────────────────────────────────────────
 function nonLinearJitter(): Promise<void> {
-  const u1    = Math.random();
-  const u2    = Math.random();
-  const beta  = u1 * u1 * (1 - u2 * u2);
+  const u1 = Math.random();
+  const u2 = Math.random();
+  const beta = u1 * u1 * (1 - u2 * u2);
   const delay = Math.floor(80 + beta * 140);
-  return new Promise(resolve => setTimeout(resolve, delay));
+  return new Promise((resolve) => setTimeout(resolve, delay));
 }
 
 // ─────────────────────────────────────────────
@@ -40,19 +43,19 @@ function nonLinearJitter(): Promise<void> {
 // ─────────────────────────────────────────────
 function logHoneypotHit(req: Request, key: string) {
   const payload = {
-    event:      'HONEYPOT_HIT',
-    ts:         new Date().toISOString(),
+    event: 'HONEYPOT_HIT',
+    ts: new Date().toISOString(),
     // ✅ SEGURO: loga apenas prefixo da key (não o valor completo)
-    keyPrefix:  key.substring(0, 20) + '...',
-    ip:         req.ip || req.socket?.remoteAddress,
+    keyPrefix: key.substring(0, 20) + '...',
+    ip: getClientIp(req),
     user_agent: req.headers['user-agent'],
-    method:     req.method,
-    path:       req.path,
-    query:      req.query,
+    method: req.method,
+    path: req.path,
+    query: req.query,
     // ✅ SEGURO: sanitiza headers antes de logar
-    headers:    sanitizeHeaders({
-      origin:      req.headers['origin'] || '',
-      referer:     req.headers['referer'] || '',
+    headers: sanitizeHeaders({
+      origin: req.headers['origin'] || '',
+      referer: req.headers['referer'] || '',
       accept_lang: req.headers['accept-language'] || '',
     }),
   };
@@ -67,15 +70,13 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
   try {
     await nonLinearJitter();
 
-    const authHeader  = req.headers.authorization;
-    const queryApiKey = req.query.apiKey as string;
-    let   apiKeyString: string | null = null;
+    const authHeader = req.headers.authorization;
+    let apiKeyString: string | null = null;
 
     if (authHeader && authHeader.startsWith('Bearer ')) {
       apiKeyString = authHeader.substring(7);
-    } else if (queryApiKey) {
-      apiKeyString = queryApiKey;
     }
+    // A chave só é aceita no header Authorization: na URL ela vazaria em logs e histórico.
 
     if (!apiKeyString) {
       return res.status(200).json(AUTH_FAIL);
@@ -104,12 +105,11 @@ export async function requireApiKey(req: Request, res: Response, next: NextFunct
 
     req.apiKey = apiKey;
 
-    res.setHeader('X-RateLimit-Limit',     apiKey.rateLimit.requestsPerMinute.toString());
+    res.setHeader('X-RateLimit-Limit', apiKey.rateLimit.requestsPerMinute.toString());
     res.setHeader('X-RateLimit-Remaining', rateLimitCheck.limits.requestsPerMinute.toString());
-    res.setHeader('X-RateLimit-Reset',     new Date(apiKey.usage.lastRequest + 60000).toISOString());
+    res.setHeader('X-RateLimit-Reset', new Date(apiKey.usage.lastRequest + 60000).toISOString());
 
     next();
-
   } catch (error) {
     // ✅ SEGURO: sanitize remove qualquer dado sensível do error
     safeError('[AUTH] Error validating API key:', error);
@@ -134,21 +134,23 @@ export async function checkIdentityCreationLimit(req: Request, res: Response, ne
       return res.status(200).json(AUTH_FAIL);
     }
 
-    res.setHeader('X-Identities-Limit',     apiKey.rateLimit.identitiesPerMonth.toString());
+    res.setHeader('X-Identities-Limit', apiKey.rateLimit.identitiesPerMonth.toString());
     res.setHeader('X-Identities-Remaining', rateLimitCheck.limits.identitiesRemaining.toString());
-    res.setHeader('X-Identities-Reset',     new Date(apiKey.usage.resetDate).toISOString());
+    res.setHeader('X-Identities-Reset', new Date(apiKey.usage.resetDate).toISOString());
 
     // ✅ Incrementa usageCount no dashboard (fire and forget)
-    const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway.xyz'
+    const dashUrl = process.env.DASHBOARD_URL || 'https://rekuway.xyz';
     fetch(`${dashUrl}/api/keys/usage`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SECRET || '' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-secret': process.env.INTERNAL_SECRET || '',
+      },
       body: JSON.stringify({ userId: apiKey.userId }),
-      signal: AbortSignal.timeout(3000)
-    }).catch(() => {})
+      signal: AbortSignal.timeout(3000),
+    }).catch(() => {});
 
     next();
-
   } catch (error) {
     safeError('[AUTH] Error checking identity limit:', error);
     res.status(200).json(AUTH_FAIL);

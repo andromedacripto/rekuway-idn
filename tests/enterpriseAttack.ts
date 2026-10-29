@@ -1,6 +1,6 @@
-import axios from "axios";
+import axios from 'axios';
 
-const API = "https://rekuway-idn-mvp.vercel.app";
+const API = 'https://rekuway-idn-mvp.vercel.app';
 
 const client = axios.create({
   validateStatus: () => true, // 🔥 aceita qualquer status
@@ -27,18 +27,18 @@ async function attack(id: string, attempts = 6) {
       `Remaining: ${res.data.remaining}`
     );
 
-    if (res.data.action === "KILLED") {
-      console.log("💀 Identity destroyed — attack neutralized");
+    if (res.data.action === 'KILLED') {
+      console.log('💀 Identity destroyed — attack neutralized');
       break;
     }
   }
 }
 
 (async () => {
-  console.log("🔐 Rekuway IDN — Enterprise Attack Simulation");
+  console.log('🔐 Rekuway IDN — Enterprise Attack Simulation');
 
-  const identity = await createIdentity("high");
-  console.log("ID:", identity.identity.id);
+  const identity = await createIdentity('high');
+  console.log('ID:', identity.identity.id);
 
   await attack(identity.identity.id);
 })();

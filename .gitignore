@@ -83,7 +83,16 @@ ai-service/__pycache__/
 ai-service/*.pyc
 ai-service/model.pkl
 ai-service/scaler.pkl
-*.key\n*.pem\nprivate.*
+# Segredos e backups (nunca versionar)
+*.key
+*.pem
+private.*
+.env*
+!.env.example
+!.env.example.txt
+*.bak
+*.backup
+
 dist/
 fix_callbacks_ip.js
 main

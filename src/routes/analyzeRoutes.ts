@@ -1,8 +1,13 @@
 import { Router, Request, Response } from 'express';
+import { safeEqualSecret } from '../utils/internalSecret';
 
 const router = Router();
 
 router.post('/', async (req: Request, res: Response) => {
+  // Mesmo token interno do ai-service (AI_SERVICE_TOKEN). Sem token configurado → recusa.
+  if (!safeEqualSecret(req.headers['x-ai-service-token'], process.env.AI_SERVICE_TOKEN)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const { features } = req.body;
     if (!features) return res.status(400).json({ error: 'features required' });
@@ -15,14 +20,15 @@ router.post('/', async (req: Request, res: Response) => {
     const regenerations = features.regenerations || 0;
     const attempts_after_regenerate = features.attempts_after_regenerate || 0;
 
-    const threatScore = Math.min(1,
-      (attempt_count * 0.10) +
-      (failure_rate * 0.25) +
-      (velocity_score * 0.20) +
-      (brute_force_score * 0.25) +
-      (suspicious_pattern_score * 0.10) +
-      (regenerations * 0.05) +
-      (attempts_after_regenerate * 0.05)
+    const threatScore = Math.min(
+      1,
+      attempt_count * 0.1 +
+        failure_rate * 0.25 +
+        velocity_score * 0.2 +
+        brute_force_score * 0.25 +
+        suspicious_pattern_score * 0.1 +
+        regenerations * 0.05 +
+        attempts_after_regenerate * 0.05
     );
 
     let recommendedAction = 'ALLOW';
@@ -32,9 +38,11 @@ router.post('/', async (req: Request, res: Response) => {
 
     const topFactors: string[] = [];
     if (velocity_score > 0.5) topFactors.push('High velocity (' + velocity_score.toFixed(2) + ')');
-    if (brute_force_score > 0.5) topFactors.push('Brute force (' + brute_force_score.toFixed(2) + ')');
+    if (brute_force_score > 0.5)
+      topFactors.push('Brute force (' + brute_force_score.toFixed(2) + ')');
     if (failure_rate > 0.5) topFactors.push('High failure rate (' + failure_rate.toFixed(2) + ')');
-    if (attempts_after_regenerate > 0) topFactors.push('Attempts after regenerate (' + attempts_after_regenerate + ')');
+    if (attempts_after_regenerate > 0)
+      topFactors.push('Attempts after regenerate (' + attempts_after_regenerate + ')');
 
     res.json({
       threatScore,

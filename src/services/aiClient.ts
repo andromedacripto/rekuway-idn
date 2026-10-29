@@ -33,11 +33,11 @@ const AI_CONFIG = {
   },
   weights: {
     attemptFrequency: 0.25,
-    ipRotation: 0.20,
+    ipRotation: 0.2,
     geolocationChange: 0.15,
     fingerprintInconsistency: 0.15,
     postRegenerationPattern: 0.15,
-    timeDeviation: 0.10,
+    timeDeviation: 0.1,
   },
 };
 
@@ -53,21 +53,21 @@ export async function analyzeWithAI(features: AIFeatures): Promise<AIAnalysisRes
     // ✅ SEGURO: loga apenas o identityId (truncado), nunca dados sensíveis
     safeLog(`[AI] 🤖 Starting analysis:`, { id: features.identityId });
 
-    const riskAnalysis  = await performRiskAnalysis(features);
+    const riskAnalysis = await performRiskAnalysis(features);
     const threatPattern = await detectThreatPattern(features);
-    const governance    = await generateGovernance(features, riskAnalysis, threatPattern);
+    const governance = await generateGovernance(features, riskAnalysis, threatPattern);
 
     const processingTimeMs = Date.now() - startTime;
 
     // ✅ SEGURO: métricas de análise sem dados sensíveis
     safeLog(`[AI] 📊 Risk Analysis:`, {
       id: features.identityId,
-      threatScore:       riskAnalysis.threatScore.toFixed(3),
-      confidence:        riskAnalysis.confidence,
+      threatScore: riskAnalysis.threatScore.toFixed(3),
+      confidence: riskAnalysis.confidence,
       recommendedAction: riskAnalysis.recommendedAction || 'N/A',
-      topFactors:        riskAnalysis.topFactors,
-      threatPattern:     threatPattern.pattern,
-      threatSeverity:    threatPattern.severity,
+      topFactors: riskAnalysis.topFactors,
+      threatPattern: threatPattern.pattern,
+      threatSeverity: threatPattern.severity,
       processingTimeMs,
     });
 
@@ -81,7 +81,6 @@ export async function analyzeWithAI(features: AIFeatures): Promise<AIAnalysisRes
 
     await logAIAnalysis(features, result);
     return result;
-
   } catch (error) {
     // ✅ SEGURO: sanitize já cuida de não expor secrets no error
     safeError('[AI] ❌ Analysis failed:', error);
@@ -93,12 +92,12 @@ async function performRiskAnalysis(features: AIFeatures): Promise<AIRiskAnalysis
   const factors: { [key: string]: number } = {};
   const topFactors: string[] = [];
 
-  factors.attemptFrequency         = calculateAttemptFrequencyScore(features);
-  factors.ipRotation               = calculateIPRotationScore(features);
-  factors.geolocationChange        = features.geolocationChange ? 0.8 : 0.0;
+  factors.attemptFrequency = calculateAttemptFrequencyScore(features);
+  factors.ipRotation = calculateIPRotationScore(features);
+  factors.geolocationChange = features.geolocationChange ? 0.8 : 0.0;
   factors.fingerprintInconsistency = features.fingerprintChange ? 0.7 : 0.0;
-  factors.postRegenerationPattern  = calculatePostRegenerationScore(features);
-  factors.timeDeviation            = calculateTimeDeviationScore(features);
+  factors.postRegenerationPattern = calculatePostRegenerationScore(features);
+  factors.timeDeviation = calculateTimeDeviationScore(features);
 
   const weightedScores = Object.entries(factors).map(([key, value]) => ({
     key,
@@ -109,11 +108,11 @@ async function performRiskAnalysis(features: AIFeatures): Promise<AIRiskAnalysis
   const threatScore = weightedScores.reduce((sum, item) => sum + item.weighted, 0);
 
   const sortedFactors = weightedScores
-    .filter(item => item.value > 0.3)
+    .filter((item) => item.value > 0.3)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5);
 
-  sortedFactors.forEach(item => topFactors.push(formatFactorName(item.key, item.value)));
+  sortedFactors.forEach((item) => topFactors.push(formatFactorName(item.key, item.value)));
 
   let confidence: 'low' | 'medium' | 'high' = 'low';
   if (sortedFactors.length >= 3 && threatScore > 0.6) confidence = 'high';
@@ -139,12 +138,12 @@ async function performRiskAnalysis(features: AIFeatures): Promise<AIRiskAnalysis
     analysisTimestamp: Date.now(),
     modelVersion: AI_CONFIG.modelVersion,
     detailedFactors: {
-      attemptFrequency:         factors.attemptFrequency,
-      ipRotation:               factors.ipRotation,
-      geolocationChange:        factors.geolocationChange,
+      attemptFrequency: factors.attemptFrequency,
+      ipRotation: factors.ipRotation,
+      geolocationChange: factors.geolocationChange,
       fingerprintInconsistency: factors.fingerprintInconsistency,
-      postRegenerationPattern:  factors.postRegenerationPattern,
-      timeDeviation:            factors.timeDeviation,
+      postRegenerationPattern: factors.postRegenerationPattern,
+      timeDeviation: factors.timeDeviation,
     },
   };
 }
@@ -163,22 +162,30 @@ async function detectThreatPattern(features: AIFeatures): Promise<ThreatPattern>
     evidence.push('Identity already regenerated once');
   } else if (features.attemptFrequency > 10 && features.ageMinutes < 5) {
     pattern = 'brute_force';
-    confidence = 0.90;
+    confidence = 0.9;
     severity = 'high';
     evidence.push(`${features.attemptFrequency.toFixed(1)} attempts/minute`);
-    evidence.push(`${features.totalAttempts} total attempts in ${features.ageMinutes.toFixed(1)} minutes`);
+    evidence.push(
+      `${features.totalAttempts} total attempts in ${features.ageMinutes.toFixed(1)} minutes`
+    );
   } else if (features.ipRotationRate > 0.5 && features.uniqueIPs >= 3) {
     pattern = 'credential_stuffing';
     confidence = 0.85;
     severity = 'high';
     evidence.push(`${features.uniqueIPs} unique IPs`);
     evidence.push(`IP rotation rate: ${features.ipRotationRate.toFixed(2)}/min`);
-  } else if (features.attemptFrequency < 0.5 && features.totalAttempts > 5 && features.ageMinutes > 30) {
+  } else if (
+    features.attemptFrequency < 0.5 &&
+    features.totalAttempts > 5 &&
+    features.ageMinutes > 30
+  ) {
     pattern = 'low_and_slow';
-    confidence = 0.70;
+    confidence = 0.7;
     severity = 'medium';
     evidence.push('Slow, distributed attempts');
-    evidence.push(`${features.totalAttempts} attempts over ${features.ageMinutes.toFixed(1)} minutes`);
+    evidence.push(
+      `${features.totalAttempts} attempts over ${features.ageMinutes.toFixed(1)} minutes`
+    );
   } else if (features.currentAttempts >= 3 && features.timeSinceLastAttempt < 10) {
     pattern = 'brute_force';
     confidence = 0.75;
@@ -208,9 +215,9 @@ async function generateGovernance(
         reason: `High threat score (${riskAnalysis.threatScore.toFixed(2)}) on LOW paranoia identity`,
         confidence: 'high',
         supportingData: {
-          attackCount:          features.totalAttempts,
-          lastAttackTimestamp:  Date.now(),
-          patternDetected:      threatPattern.pattern,
+          attackCount: features.totalAttempts,
+          lastAttackTimestamp: Date.now(),
+          patternDetected: threatPattern.pattern,
         },
       },
       suggestedAction: 'Consider upgrading paranoia level to HIGH for better protection',
@@ -225,8 +232,8 @@ async function generateGovernance(
         reason: 'Persistent attacks after regeneration detected',
         confidence: 'high',
         supportingData: {
-          attackCount:        features.attemptsAfterRegenerate,
-          patternDetected:    'post_regeneration',
+          attackCount: features.attemptsAfterRegenerate,
+          patternDetected: 'post_regeneration',
           affectedIdentities: [features.identityId],
         },
       },
@@ -241,30 +248,30 @@ async function generateGovernance(
 function calculateAttemptFrequencyScore(features: AIFeatures): number {
   if (features.attemptFrequency > 20) return 1.0;
   if (features.attemptFrequency > 10) return 0.9;
-  if (features.attemptFrequency > 5)  return 0.7;
-  if (features.attemptFrequency > 2)  return 0.5;
-  if (features.attemptFrequency > 1)  return 0.3;
+  if (features.attemptFrequency > 5) return 0.7;
+  if (features.attemptFrequency > 2) return 0.5;
+  if (features.attemptFrequency > 1) return 0.3;
   return 0.0;
 }
 
 function calculateIPRotationScore(features: AIFeatures): number {
-  if (features.uniqueIPs <= 1)         return 0.0;
-  if (features.ipRotationRate > 1.0)   return 1.0;
-  if (features.ipRotationRate > 0.5)   return 0.8;
-  if (features.ipRotationRate > 0.2)   return 0.6;
-  if (features.uniqueIPs >= 3)         return 0.5;
+  if (features.uniqueIPs <= 1) return 0.0;
+  if (features.ipRotationRate > 1.0) return 1.0;
+  if (features.ipRotationRate > 0.5) return 0.8;
+  if (features.ipRotationRate > 0.2) return 0.6;
+  if (features.uniqueIPs >= 3) return 0.5;
   return 0.3;
 }
 
 function calculatePostRegenerationScore(features: AIFeatures): number {
-  if (!features.isPostRegeneration)               return 0.0;
-  if (features.attemptsAfterRegenerate >= 2)       return 1.0;
-  if (features.attemptsAfterRegenerate === 1)      return 0.8;
+  if (!features.isPostRegeneration) return 0.0;
+  if (features.attemptsAfterRegenerate >= 2) return 1.0;
+  if (features.attemptsAfterRegenerate === 1) return 0.8;
   return 0.4;
 }
 
 function calculateTimeDeviationScore(features: AIFeatures): number {
-  if (features.timeSinceLastAttempt < 5)  return 0.9;
+  if (features.timeSinceLastAttempt < 5) return 0.9;
   if (features.timeSinceLastAttempt < 15) return 0.6;
   if (features.timeSinceLastAttempt < 60) return 0.3;
   return 0.0;
@@ -272,12 +279,12 @@ function calculateTimeDeviationScore(features: AIFeatures): number {
 
 function formatFactorName(key: string, value: number): string {
   const names: { [key: string]: string } = {
-    attemptFrequency:         'High attempt frequency',
-    ipRotation:               'IP rotation detected',
-    geolocationChange:        'Geolocation change',
+    attemptFrequency: 'High attempt frequency',
+    ipRotation: 'IP rotation detected',
+    geolocationChange: 'Geolocation change',
     fingerprintInconsistency: 'Fingerprint change',
-    postRegenerationPattern:  'Post-regeneration attack',
-    timeDeviation:            'Rapid successive attempts',
+    postRegenerationPattern: 'Post-regeneration attack',
+    timeDeviation: 'Rapid successive attempts',
   };
   return `${names[key] || key} (${value.toFixed(2)})`;
 }
@@ -289,7 +296,7 @@ async function logAIAnalysis(features: AIFeatures, result: AIAnalysisResult): Pr
     // ✅ SEGURO: o objeto 'features' não contém privateKey.
     // Salva para auditoria interna apenas.
     const log = {
-      timestamp:  Date.now(),
+      timestamp: Date.now(),
       identityId: features.identityId,
       features,
       result,

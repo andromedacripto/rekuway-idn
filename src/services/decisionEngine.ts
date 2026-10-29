@@ -31,6 +31,27 @@ export interface DecisionResult {
   };
 }
 
+/**
+ * Regras determinísticas por nível de paranoia (extraídas de identityRoutes,
+ * lógica idêntica). `regenerateThreshold` vem de config/paranoia.json.
+ *
+ *  - Após regeneração: 1ª falha → LIE, 2ª ou mais → KILL.
+ *  - Sem regeneração: attempts >= regenerateThreshold → REGENERATE.
+ *  - Caso contrário → ALLOW.
+ */
+export function computeRuleBasedAction(
+  identity: { attempts: number; regenerationCount: number; attemptsAfterRegenerate: number },
+  regenerateThreshold: number
+): DefensiveAction {
+  if (identity.regenerationCount > 0) {
+    if (identity.attemptsAfterRegenerate >= 2) return DefensiveAction.KILL;
+    if (identity.attemptsAfterRegenerate === 1) return DefensiveAction.LIE;
+    return DefensiveAction.ALLOW;
+  }
+  if (identity.attempts >= regenerateThreshold) return DefensiveAction.REGENERATE;
+  return DefensiveAction.ALLOW;
+}
+
 export async function combineDecisionsV3(context: DecisionContext): Promise<DecisionResult> {
   const {
     ruleBasedAction,
@@ -45,9 +66,9 @@ export async function combineDecisionsV3(context: DecisionContext): Promise<Deci
   const auditLog: string[] = [];
 
   const logCtx = {
-    id:          identityId,
+    id: identityId,
     rulesAction: ruleBasedAction,
-    aiAction:    aiRecommendation || 'N/A',
+    aiAction: aiRecommendation || 'N/A',
     cryptoValid: validationSuccessful,
     threatScore: threatScore.toFixed(3),
   };
@@ -65,17 +86,17 @@ export async function combineDecisionsV3(context: DecisionContext): Promise<Deci
     auditLog.push('Reason: cryptographic_validation');
 
     await logDecision(identityId, {
-      action:         'ALLOW',
-      source:         'cryptographic_validation',
+      action: 'ALLOW',
+      source: 'cryptographic_validation',
       aiRecommendation,
-      aiWasIgnored:   aiRecommendation !== 'ALLOW',
+      aiWasIgnored: aiRecommendation !== 'ALLOW',
       threatScore,
     });
 
     return {
-      action:         DefensiveAction.ALLOW,
-      reason:         'Valid cryptographic signature',
-      confidence:     1.0,
+      action: DefensiveAction.ALLOW,
+      reason: 'Valid cryptographic signature',
+      confidence: 1.0,
       aiContribution: aiRecommendation ? 'ignored' : 'unavailable',
       auditLog,
     };
@@ -87,15 +108,15 @@ export async function combineDecisionsV3(context: DecisionContext): Promise<Deci
     auditLog.push('Reason: rules_only (AI unavailable)');
 
     await logDecision(identityId, {
-      action:      ruleBasedAction,
-      source:      'rules_only',
+      action: ruleBasedAction,
+      source: 'rules_only',
       aiAvailable: false,
     });
 
     return {
-      action:         ruleBasedAction,
-      reason:         buildReasonV3(ruleBasedAction, 'unavailable', []),
-      confidence:     0.7,
+      action: ruleBasedAction,
+      reason: buildReasonV3(ruleBasedAction, 'unavailable', []),
+      confidence: 0.7,
       aiContribution: 'unavailable',
       auditLog,
     };
@@ -106,61 +127,70 @@ export async function combineDecisionsV3(context: DecisionContext): Promise<Deci
   let aiContribution: 'ignored' | 'agreed' | 'noted';
   let aiDisagreement: DecisionResult['aiDisagreement'] | undefined;
 
-  if (aiRecommendation === ruleBasedAction) {
+  // DefensiveAction.ALLOW vale 'ALLOWED', mas a IA fala 'ALLOW': normaliza
+  // para comparar o mesmo vocabulário (senão ALLOW vs ALLOW viraria divergência).
+  const ruleKey: string = ruleBasedAction === DefensiveAction.ALLOW ? 'ALLOW' : ruleBasedAction;
+
+  if (aiRecommendation === ruleKey) {
     aiContribution = 'agreed';
     safeLog(`[DECISION] ✅ AI agreed:`, { action: finalAction, factors: topFactors.slice(0, 3) });
     auditLog.push(`AI agreed: ${finalAction}`);
   } else {
     aiContribution = 'noted';
     const severityMap: { [key: string]: number } = { ALLOW: 0, REGENERATE: 1, LIE: 2, KILL: 3 };
-    const aiWantedHigher = severityMap[aiRecommendation] > severityMap[ruleBasedAction];
+    const aiWantedHigher = severityMap[aiRecommendation] > severityMap[ruleKey];
 
     if (aiWantedHigher) {
       safeLog(`[DECISION] 🚫 AI escalation OVERRIDDEN by Rules:`, {
-        aiWanted:    aiRecommendation,
-        rulesChose:  ruleBasedAction,
+        aiWanted: aiRecommendation,
+        rulesChose: ruleKey,
         threatScore: threatScore.toFixed(3),
       });
       aiDisagreement = {
-        aiWanted:   aiRecommendation,
-        rulesChose: ruleBasedAction,
-        reason:     `AI detected higher threat (${threatScore.toFixed(2)}) but Rules are authority`,
+        aiWanted: aiRecommendation,
+        rulesChose: ruleKey,
+        reason: `AI detected higher threat (${threatScore.toFixed(2)}) but Rules are authority`,
       };
     } else {
       safeLog(`[DECISION] 📊 AI de-escalation noted, Rules maintained:`, {
-        aiWanted:   aiRecommendation,
-        rulesChose: ruleBasedAction,
+        aiWanted: aiRecommendation,
+        rulesChose: ruleKey,
       });
       aiDisagreement = {
-        aiWanted:   aiRecommendation,
-        rulesChose: ruleBasedAction,
-        reason:     'Rules enforce stricter policy than AI suggested',
+        aiWanted: aiRecommendation,
+        rulesChose: ruleKey,
+        reason: 'Rules enforce stricter policy than AI suggested',
       };
     }
-    auditLog.push(`AI disagreed: wanted ${aiRecommendation}, rules chose ${ruleBasedAction}`);
+    auditLog.push(`AI disagreed: wanted ${aiRecommendation}, rules chose ${ruleKey}`);
   }
 
   const finalConfidence = calculateConfidenceV3(aiContribution, threatScore, confidence);
 
-  safeLog(`[DECISION] 🎯 Final:`, { action: finalAction, contribution: aiContribution, confidence: finalConfidence.toFixed(2) });
+  safeLog(`[DECISION] 🎯 Final:`, {
+    action: finalAction,
+    contribution: aiContribution,
+    confidence: finalConfidence.toFixed(2),
+  });
   safeLog(`[DECISION] ========================================`);
 
   await logDecision(identityId, {
-    action:          finalAction,
-    source:          'rules_with_ai_insight',
+    action: finalAction,
+    source: 'rules_with_ai_insight',
     ruleBasedAction,
     aiRecommendation,
-    aiAgreed:        aiContribution === 'agreed',
+    aiAgreed: aiContribution === 'agreed',
     aiDisagreement,
+    auditLog,
     threatScore,
     topFactors,
-    confidence:      finalConfidence,
+    confidence: finalConfidence,
   });
 
   return {
-    action:         finalAction,
-    reason:         buildReasonV3(finalAction, aiContribution, topFactors),
-    confidence:     finalConfidence,
+    action: finalAction,
+    reason: buildReasonV3(finalAction, aiContribution, topFactors),
+    confidence: finalConfidence,
     aiContribution,
     auditLog,
     aiDisagreement,
@@ -173,8 +203,8 @@ function calculateConfidenceV3(
   aiConfidence: string
 ): number {
   if (aiContribution === 'agreed') return aiConfidence === 'high' ? 0.95 : 0.85;
-  if (aiContribution === 'noted')  return 0.75;
-  return 0.70;
+  if (aiContribution === 'noted') return 0.75;
+  return 0.7;
 }
 
 function buildReasonV3(
@@ -183,10 +213,10 @@ function buildReasonV3(
   topFactors: string[]
 ): string {
   const reasons: { [key: string]: string } = {
-    ALLOW:      'No significant threats detected by rules',
+    ALLOW: 'No significant threats detected by rules',
     REGENERATE: 'Rules triggered proactive regeneration',
-    LIE:        'Rules confirmed attack pattern — returning deceptive data',
-    KILL:       'Rules determined critical threat — identity destroyed',
+    LIE: 'Rules confirmed attack pattern — returning deceptive data',
+    KILL: 'Rules determined critical threat — identity destroyed',
   };
 
   let reason = reasons[action] || 'Security policy enforcement by rules';
@@ -210,11 +240,7 @@ async function logDecision(identityId: string, decision: Record<string, unknown>
 }
 
 /** @deprecated Use combineDecisionsV3 */
-export function combineDecisions(
-  ruleBasedAction: DefensiveAction,
-
-
-): DefensiveAction {
+export function combineDecisions(ruleBasedAction: DefensiveAction): DefensiveAction {
   safeWarn('[DECISION] ⚠️ Using deprecated combineDecisions — upgrade to combineDecisionsV3');
   return ruleBasedAction;
 }

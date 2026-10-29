@@ -25,10 +25,10 @@ export interface ApiKey {
 }
 
 const TIERS = {
-  hobby:      { identitiesPerMonth: 100,   requestsPerMinute: 10    },
-  startup:    { identitiesPerMonth: 1000,  requestsPerMinute: 100   },
-  business:   { identitiesPerMonth: 10000, requestsPerMinute: 1000  },
-  enterprise: { identitiesPerMonth: -1,    requestsPerMinute: -1    },
+  hobby: { identitiesPerMonth: 100, requestsPerMinute: 10 },
+  startup: { identitiesPerMonth: 1000, requestsPerMinute: 100 },
+  business: { identitiesPerMonth: 10000, requestsPerMinute: 1000 },
+  enterprise: { identitiesPerMonth: -1, requestsPerMinute: -1 },
 };
 
 export function generateApiKey(): string {
@@ -45,11 +45,11 @@ export async function createApiKey(
   name: string,
   tier: ApiKey['tier'] = 'hobby'
 ): Promise<{ apiKey: ApiKey; plainKey: string }> {
-  const plainKey  = generateApiKey();
+  const plainKey = generateApiKey();
   const hashedKey = hashApiKey(plainKey);
 
-  const now       = Date.now();
-  const resetDate = now + (30 * 24 * 60 * 60 * 1000);
+  const now = Date.now();
+  const resetDate = now + 30 * 24 * 60 * 60 * 1000;
 
   const apiKey: ApiKey = {
     key: plainKey.substring(0, 20) + '...', // Parcial — apenas para exibição
@@ -59,13 +59,13 @@ export async function createApiKey(
     tier,
     rateLimit: TIERS[tier],
     usage: {
-      identitiesCreated:  0,
+      identitiesCreated: 0,
       requestsThisMinute: 0,
-      lastRequest:        now,
+      lastRequest: now,
       resetDate,
     },
     createdAt: now,
-    isActive:  true,
+    isActive: true,
   };
 
   await db.setApiKey(hashedKey, apiKey as unknown as Record<string, unknown>);
@@ -80,7 +80,7 @@ export async function validateApiKey(apiKey: string): Promise<ApiKey | null> {
   if (!apiKey || !apiKey.startsWith('rkwy_live_')) return null;
 
   const hashedKey = hashApiKey(apiKey);
-  const keyData = await db.getApiKey(hashedKey) as unknown as ApiKey | null;
+  const keyData = (await db.getApiKey(hashedKey)) as unknown as ApiKey | null;
   if (!keyData || !keyData.isActive) return null;
   return keyData;
 }
@@ -97,7 +97,7 @@ export async function checkRateLimit(
 
   if (now > apiKey.usage.resetDate) {
     apiKey.usage.identitiesCreated = 0;
-    apiKey.usage.resetDate = now + (30 * 24 * 60 * 60 * 1000);
+    apiKey.usage.resetDate = now + 30 * 24 * 60 * 60 * 1000;
   }
 
   if (now - apiKey.usage.lastRequest > 60000) {
@@ -129,7 +129,7 @@ export async function checkRateLimit(
 
   apiKey.usage.requestsThisMinute++;
   apiKey.usage.totalRequests = (apiKey.usage.totalRequests || 0) + 1;
-  apiKey.usage.lastRequest   = now;
+  apiKey.usage.lastRequest = now;
 
   if (isIdentityCreation) apiKey.usage.identitiesCreated++;
 
@@ -138,17 +138,17 @@ export async function checkRateLimit(
   return {
     allowed: true,
     limits: {
-      identitiesRemaining: apiKey.rateLimit.identitiesPerMonth === -1
-        ? -1
-        : apiKey.rateLimit.identitiesPerMonth - apiKey.usage.identitiesCreated,
+      identitiesRemaining:
+        apiKey.rateLimit.identitiesPerMonth === -1
+          ? -1
+          : apiKey.rateLimit.identitiesPerMonth - apiKey.usage.identitiesCreated,
       requestsPerMinute: reqLimit === -1 ? -1 : reqLimit - apiKey.usage.requestsThisMinute,
     },
   };
 }
 export async function listUserApiKeys(userId: string): Promise<ApiKey[]> {
-
-  const allKeys = await db.listApiKeys() as unknown as ApiKey[];
-  return allKeys.filter(key => key.userId === userId);
+  const allKeys = (await db.listApiKeys()) as unknown as ApiKey[];
+  return allKeys.filter((key) => key.userId === userId);
 }
 
 export async function revokeApiKey(hashedKey: string): Promise<boolean> {
@@ -166,31 +166,31 @@ export async function revokeApiKey(hashedKey: string): Promise<boolean> {
 export async function incrementBlockedRequests(apiKeyString: string): Promise<void> {
   try {
     const hashedKey = crypto.createHash('sha256').update(apiKeyString).digest('hex');
-    let keyData = await db.getApiKey(hashedKey) as unknown as ApiKey | null;
+    let keyData = (await db.getApiKey(hashedKey)) as unknown as ApiKey | null;
 
     if (!keyData) {
       keyData = {
-        key:      'invalid',
+        key: 'invalid',
         hashedKey,
-        name:     'Invalid/Blocked Key',
-        userId:   'unknown',
-        tier:     'hobby',
+        name: 'Invalid/Blocked Key',
+        userId: 'unknown',
+        tier: 'hobby',
         rateLimit: { identitiesPerMonth: 0, requestsPerMinute: 0 },
         usage: {
-          identitiesCreated:  0,
+          identitiesCreated: 0,
           requestsThisMinute: 0,
-          lastRequest:        Date.now(),
-          resetDate:          Date.now() + (30 * 24 * 60 * 60 * 1000),
-          totalRequests:      0,
-          blockedRequests:    0,
+          lastRequest: Date.now(),
+          resetDate: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          totalRequests: 0,
+          blockedRequests: 0,
         },
         createdAt: Date.now(),
-        isActive:  false,
+        isActive: false,
       };
     }
 
     keyData.usage.blockedRequests = (keyData.usage.blockedRequests || 0) + 1;
-    keyData.usage.totalRequests   = (keyData.usage.totalRequests   || 0) + 1;
+    keyData.usage.totalRequests = (keyData.usage.totalRequests || 0) + 1;
     await db.setApiKey(hashedKey, keyData as unknown as Record<string, unknown>);
   } catch (error) {
     safeError('[API_KEY] Error incrementing blocked:', error);

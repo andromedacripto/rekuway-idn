@@ -3,6 +3,7 @@ import { Identity } from '../models/Identity';
 import { db } from '../config/database';
 import { generateKeyPair, hashValue, generateFakeMetadata } from '../utils/crypto';
 import { safeLog, safeError } from '../utils/sanitize';
+import { safeEqualString } from '../utils/internalSecret';
 import paranoiaConfig from '../config/paranoia.json';
 
 interface DeadmanConfig {
@@ -19,9 +20,9 @@ export async function createIdentity(
 ): Promise<{ identity: Identity; privateKey: string }> {
   try {
     const { publicKey, privateKey } = generateKeyPair();
-    const config = paranoiaConfig[paranoiaLevel] as DeadmanConfig;
+    const config = paranoiaConfig[paranoiaLevel] as unknown as DeadmanConfig;
     const now = Date.now();
-    const expiresAt = now + (config.ttl * 1000);
+    const expiresAt = now + config.ttl * 1000;
 
     const identity: Identity = {
       id: uuidv4(),
@@ -164,7 +165,7 @@ export async function validateIdentity(
     }
 
     const providedHash = hashValue(privateKey);
-    const isValidSignature = providedHash === identity.privateKeyHash;
+    const isValidSignature = safeEqualString(providedHash, identity.privateKeyHash);
 
     safeLog(`[IDENTITY] 🔑 Hash match:`, { id: identityId, isValidSignature });
 

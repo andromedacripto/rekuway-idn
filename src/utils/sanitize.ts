@@ -42,11 +42,7 @@ const SENSITIVE_KEYS = new Set([
   'credentials',
 ]);
 
-const PARTIAL_REDACT_KEYS = new Set([
-  'hashedKey',
-  'hashed_key',
-  'privateKeyHash',
-]);
+const PARTIAL_REDACT_KEYS = new Set(['hashedKey', 'hashed_key', 'privateKeyHash']);
 
 /**
  * Sanitiza recursivamente um objeto para remover dados sensíveis.
@@ -74,7 +70,7 @@ export function sanitize(data: unknown, depth = 0): unknown {
 
   // Array
   if (Array.isArray(data)) {
-    return data.map(item => sanitize(item, depth + 1));
+    return data.map((item) => sanitize(item, depth + 1));
   }
 
   // Error object
@@ -109,7 +105,7 @@ export function sanitize(data: unknown, depth = 0): unknown {
  * Converte objetos em JSON legível sem dados sensíveis.
  */
 function formatForLog(args: unknown[]): unknown[] {
-  return args.map(arg => {
+  return args.map((arg) => {
     if (typeof arg === 'object' && arg !== null) {
       return sanitize(arg);
     }

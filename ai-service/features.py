@@ -1,6 +1,16 @@
 """
 Feature Engineering para Rekuway IDN
 Extrai e normaliza features comportamentais
+
+CONTRATO DE FEATURES (fonte única; o cliente TypeScript em
+src/services/railwayAiClient.ts envia exatamente estas 9 chaves):
+
+  attempt_interval_ms, attempt_count, total_attempts, regenerations,
+  ip_change, fingerprint_reuse, user_agent_entropy,
+  endpoint_sequence_score, hour_of_day (UTC)
+
+Chaves ausentes valem 0; chaves extras são ignoradas. Mudar o contrato
+exige retreinar o modelo (train.py) e atualizar o cliente TS junto.
 """
 
 from typing import Dict

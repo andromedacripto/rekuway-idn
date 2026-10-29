@@ -1,0 +1,3 @@
+node scripts/secret-scan.mjs --staged
+npx lint-staged
+npm run typecheck

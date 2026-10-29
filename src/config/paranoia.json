@@ -3,25 +3,57 @@
     "regenerateThreshold": 5,
     "maxAttempts": 10,
     "ttl": 86400,
-    "fakeFingerprintEnabled": false
+    "fakeFingerprintEnabled": false,
+    "sessionPolicy": {
+      "challengeAt": 0.6,
+      "requireMfa": false,
+      "maxStepUpFailures": 5,
+      "blockSeconds": 300,
+      "graceSeconds": 1800,
+      "onPersist": "block"
+    }
   },
   "medium": {
     "regenerateThreshold": 3,
     "maxAttempts": 5,
     "ttl": 3600,
-    "fakeFingerprintEnabled": true
+    "fakeFingerprintEnabled": true,
+    "sessionPolicy": {
+      "challengeAt": 0.4,
+      "requireMfa": true,
+      "maxStepUpFailures": 4,
+      "blockSeconds": 900,
+      "graceSeconds": 900,
+      "onPersist": "block"
+    }
   },
   "high": {
     "regenerateThreshold": 2,
     "maxAttempts": 3,
     "ttl": 1800,
-    "fakeFingerprintEnabled": true
+    "fakeFingerprintEnabled": true,
+    "sessionPolicy": {
+      "challengeAt": 0.35,
+      "requireMfa": true,
+      "maxStepUpFailures": 3,
+      "blockSeconds": 1800,
+      "graceSeconds": 600,
+      "onPersist": "block"
+    }
   },
   "deadman": {
     "regenerateThreshold": 1,
     "maxAttempts": 1,
     "ttl": 300,
     "fakeFingerprintEnabled": true,
-    "deadmanTimer": 60
+    "deadmanTimer": 60,
+    "sessionPolicy": {
+      "challengeAt": 0.2,
+      "requireMfa": true,
+      "maxStepUpFailures": 2,
+      "blockSeconds": 3600,
+      "graceSeconds": 300,
+      "onPersist": "kill"
+    }
   }
 }

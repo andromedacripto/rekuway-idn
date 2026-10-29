@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { safeEqualString } from './internalSecret';
 
 /**
  * Gera um par de chaves pública/privada
@@ -9,12 +10,12 @@ export function generateKeyPair(): { publicKey: string; privateKey: string } {
     modulusLength: 2048,
     publicKeyEncoding: {
       type: 'spki',
-      format: 'pem'
+      format: 'pem',
     },
     privateKeyEncoding: {
       type: 'pkcs8',
-      format: 'pem'
-    }
+      format: 'pem',
+    },
   });
 
   return { publicKey, privateKey };
@@ -40,7 +41,7 @@ export function generateToken(): string {
  * Valida se uma chave privada corresponde ao hash armazenado
  */
 export function validatePrivateKey(privateKey: string, storedHash: string): boolean {
-  return hashValue(privateKey) === storedHash;
+  return safeEqualString(hashValue(privateKey), storedHash);
 }
 
 /**
@@ -51,7 +52,7 @@ export function generateFakeMetadata() {
   const fakeIPs = [
     '203.0.113.0', // Test network
     '198.51.100.0',
-    '192.0.2.0'
+    '192.0.2.0',
   ];
 
   const fakeLocations = [
@@ -59,13 +60,13 @@ export function generateFakeMetadata() {
     'London, UK',
     'Sydney, Australia',
     'São Paulo, Brazil',
-    'Toronto, Canada'
+    'Toronto, Canada',
   ];
 
   const fakeUserAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
   ];
 
   const fakeDevices = ['Desktop', 'Mobile', 'Tablet'];
@@ -74,6 +75,6 @@ export function generateFakeMetadata() {
     ip: fakeIPs[Math.floor(Math.random() * fakeIPs.length)],
     location: fakeLocations[Math.floor(Math.random() * fakeLocations.length)],
     userAgent: fakeUserAgents[Math.floor(Math.random() * fakeUserAgents.length)],
-    device: fakeDevices[Math.floor(Math.random() * fakeDevices.length)]
+    device: fakeDevices[Math.floor(Math.random() * fakeDevices.length)],
   };
 }

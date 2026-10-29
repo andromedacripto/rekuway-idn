@@ -10,14 +10,19 @@ export const newIdentitySchema = z.object({
 // ─────────────────────────────────────────────
 //  POST /identity/check
 // ─────────────────────────────────────────────
-export const checkIdentitySchema = z.object({
-  token:      z.string().length(64).regex(/^[0-9a-f]+$/).optional(),
-  identityId: z.string().uuid().optional(),
-  privateKey: z.string().min(1).optional(),
-}).refine(
-  (data) => data.token || (data.identityId && data.privateKey),
-  { message: 'Provide either token or identityId + privateKey' }
-);
+export const checkIdentitySchema = z
+  .object({
+    token: z
+      .string()
+      .length(64)
+      .regex(/^[0-9a-f]+$/)
+      .optional(),
+    identityId: z.string().uuid().optional(),
+    privateKey: z.string().min(1).optional(),
+  })
+  .refine((data) => data.token || (data.identityId && data.privateKey), {
+    message: 'Provide either token or identityId + privateKey',
+  });
 
 // ─────────────────────────────────────────────
 //  POST /identity/heartbeat
@@ -44,6 +49,28 @@ export const killSchema = z.object({
 });
 
 // ─────────────────────────────────────────────
+//  POST /identity/step-up
+// ─────────────────────────────────────────────
+export const stepUpSchema = z
+  .object({
+    challengeId: z.string().uuid(),
+    code: z
+      .string()
+      .regex(/^\d{6}$/)
+      .optional(),
+    token: z
+      .string()
+      .length(64)
+      .regex(/^[0-9a-f]+$/)
+      .optional(),
+    identityId: z.string().uuid().optional(),
+    privateKey: z.string().min(1).optional(),
+  })
+  .refine((data) => data.token || (data.identityId && data.privateKey), {
+    message: 'Provide either token or identityId + privateKey',
+  });
+
+// ─────────────────────────────────────────────
 //  Helper — parse e retorna erro padronizado
 // ─────────────────────────────────────────────
 export function parseBody<T>(
@@ -52,7 +79,7 @@ export function parseBody<T>(
 ): { success: true; data: T } | { success: false; error: string } {
   const result = schema.safeParse(body);
   if (!result.success) {
-    const msg = result.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const msg = result.error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join(', ');
     return { success: false, error: msg };
   }
   return { success: true, data: result.data };

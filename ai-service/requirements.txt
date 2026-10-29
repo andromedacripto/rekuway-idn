@@ -1,9 +1,11 @@
-anthropic==0.39.0
-fastapi==0.115.6
-uvicorn==0.32.1
-pydantic==2.10.3
+fastapi>=0.110,<1
+uvicorn>=0.29,<1
+pydantic>=2,<3
 python-dotenv==1.0.1
-httpx==0.28.1
-numpy
-scikit-learn
-joblib
+httpx>=0.27,<1
+# O modelo versionado (models/isolation_forest.joblib) foi serializado com
+# scikit-learn 1.4.0. Versões diferentes emitem aviso e podem dar scores diferentes.
+# Para atualizar: pip install nova versão, rode train.py e evaluate.py, e versione o novo modelo.
+scikit-learn==1.4.0
+numpy>=1.26,<2
+joblib>=1.3

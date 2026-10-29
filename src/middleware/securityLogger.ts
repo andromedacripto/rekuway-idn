@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { getClientIp } from '../utils/clientIp';
 
 declare module 'express-serve-static-core' {
   interface Request {
@@ -16,12 +17,14 @@ declare module 'express-serve-static-core' {
  */
 export function securityLogger(req: Request, res: Response, next: NextFunction) {
   const timestamp = new Date().toISOString();
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const ip = getClientIp(req);
   const method = req.method;
   const path = req.path;
   const userAgent = req.get('user-agent') || 'unknown';
 
-  console.log(`[${timestamp}] ${method} ${path} | IP: ${ip} | UA: ${userAgent.substring(0, 50)}...`);
+  console.log(
+    `[${timestamp}] ${method} ${path} | IP: ${ip} | UA: ${userAgent.substring(0, 50)}...`
+  );
 
   res.on('finish', () => {
     const statusCode = res.statusCode;
@@ -38,7 +41,7 @@ export function securityLogger(req: Request, res: Response, next: NextFunction) 
  */
 export function rateLimitByIP(req: Request, res: Response, next: NextFunction) {
   // Em produção, use express-rate-limit ou redis-based rate limiting
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const ip = getClientIp(req);
 
   req.clientIP = ip;
   next();

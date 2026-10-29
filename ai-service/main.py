@@ -8,7 +8,10 @@ MUDANÇAS CRÍTICAS:
 ✅ Métricas de performance para monitoramento
 """
 
-from fastapi import FastAPI, HTTPException
+import os
+import secrets
+
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
@@ -25,14 +28,38 @@ app = FastAPI(
     version="2.1.0"
 )
 
-# CORS
+# CORS: somente origens explícitas em ALLOWED_ORIGINS (separadas por vírgula).
+# Sem a variável, nenhuma origem de navegador é liberada. Este serviço é
+# chamado servidor-a-servidor, que não depende de CORS.
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-AI-Service-Token"],
 )
+
+
+# Limiares de score -> ação recomendada (consultiva). Medidos com evaluate.py:
+# com o limiar antigo de 0.30, 100% do tráfego normal sintético virava REGENERATE.
+REGENERATE_FROM = float(os.getenv("AI_THRESHOLD_REGENERATE", "0.50"))
+LIE_FROM = float(os.getenv("AI_THRESHOLD_LIE", "0.70"))
+KILL_FROM = float(os.getenv("AI_THRESHOLD_KILL", "0.85"))
+
+
+def require_service_token(x_ai_service_token: Optional[str] = Header(default=None)) -> None:
+    """
+    Exige o token interno (header X-AI-Service-Token == env AI_SERVICE_TOKEN).
+    Comparação em tempo constante. Sem AI_SERVICE_TOKEN configurado, recusa tudo.
+    """
+    expected = os.getenv("AI_SERVICE_TOKEN", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Service not configured")
+    provided = x_ai_service_token or ""
+    if not secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # Inicializa modelo e extrator
 model = AnomalyDetectorV2()
@@ -117,16 +144,17 @@ async def health():
     }
 
 
-@app.post("/analyze", response_model=AnalysisResponse)
+@app.post("/analyze", response_model=AnalysisResponse, dependencies=[Depends(require_service_token)])
 async def analyze(request: FeatureRequest):
     """
     Analisa features comportamentais e retorna threat score + ação recomendada
     
     THRESHOLDS V2 (ajustados):
-    < 0.30 → ALLOW      (tráfego limpo)
-    < 0.50 → REGENERATE (suspeita leve)
-    < 0.70 → LIE        (suspeita confirmada)
+    < 0.50 → ALLOW      (tráfego limpo)
+    < 0.70 → REGENERATE (suspeita leve)
+    < 0.85 → LIE        (suspeita confirmada)
     >= 0.85 → KILL      (ameaça crítica)
+    (limiares configuráveis: AI_THRESHOLD_REGENERATE / _LIE / _KILL)
     
     Latência alvo: < 30ms
     """
@@ -196,23 +224,18 @@ def _map_score_to_action_v2(
         return "KILL"
     
     # 🔴 KILL: Threat score altíssimo
-    if threat_score >= 0.85:
+    if threat_score >= KILL_FROM:
         print(f"[ACTION] 🔴 Critical threat ({threat_score:.3f}) → KILL")
         return "KILL"
     
     # 🟡 LIE: Threat score alto
-    if threat_score >= 0.70:
+    if threat_score >= LIE_FROM:
         print(f"[ACTION] 🟡 High threat ({threat_score:.3f}) → LIE")
         return "LIE"
     
     # 🟢 REGENERATE: Suspeita leve
-    if threat_score >= 0.50:
+    if threat_score >= REGENERATE_FROM:
         print(f"[ACTION] 🟢 Medium threat ({threat_score:.3f}) → REGENERATE")
-        return "REGENERATE"
-    
-    # ⬇️ THRESHOLD MAIS ALTO: Permite mais tráfego legítimo
-    if threat_score >= 0.30:
-        print(f"[ACTION] ⚠️ Low threat ({threat_score:.3f}) → REGENERATE")
         return "REGENERATE"
     
     # ✅ ALLOW: Tráfego limpo

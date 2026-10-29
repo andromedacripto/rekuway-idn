@@ -22,38 +22,28 @@ export async function extractFeatures(
     ? (now - identity.lastAttemptAt) / 1000
     : timeSinceCreation;
 
-  const attemptFrequency = ageMinutes > 0
-    ? identity.totalAttempts / ageMinutes
-    : 0;
+  const attemptFrequency = ageMinutes > 0 ? identity.totalAttempts / ageMinutes : 0;
 
   const ipHistory = await getIPHistory(identity.id);
   const uniqueIPs = ipHistory.length;
-  const ipRotationRate = ageMinutes > 0
-    ? uniqueIPs / ageMinutes
-    : 0;
+  const ipRotationRate = ageMinutes > 0 ? uniqueIPs / ageMinutes : 0;
 
   const lastFingerprint = await getLastFingerprint(identity.id);
-  const fingerprintChange = lastFingerprint
-    ? lastFingerprint.userAgent !== userAgent
-    : false;
+  const fingerprintChange = lastFingerprint ? lastFingerprint.userAgent !== userAgent : false;
 
   const lastGeo = await getLastGeolocation(identity.id);
   const currentGeo = estimateGeolocation(clientIP);
-  const geolocationChange = lastGeo
-    ? lastGeo.country !== currentGeo.country
-    : false;
+  const geolocationChange = lastGeo ? lastGeo.country !== currentGeo.country : false;
 
   const isPostRegeneration = (identity.regenerationCount || 0) > 0;
   const config = paranoiaConfig[identity.paranoiaLevel];
   const maxAttempts = config.maxAttempts;
-  const isNearMaxAttempts = identity.attempts >= (maxAttempts * 0.7);
+  const isNearMaxAttempts = identity.attempts >= maxAttempts * 0.7;
 
   const endpointSequence = await getEndpointSequence(identity.id);
-  const checkCount = endpointSequence.filter(e => e === 'check').length;
-  const heartbeatCount = endpointSequence.filter(e => e === 'heartbeat').length;
-  const checkToHeartbeatRatio = heartbeatCount > 0
-    ? checkCount / heartbeatCount
-    : checkCount;
+  const checkCount = endpointSequence.filter((e) => e === 'check').length;
+  const heartbeatCount = endpointSequence.filter((e) => e === 'heartbeat').length;
+  const checkToHeartbeatRatio = heartbeatCount > 0 ? checkCount / heartbeatCount : checkCount;
 
   await trackClientIP(identity.id, clientIP);
   await trackFingerprint(identity.id, { userAgent, timestamp: now });
@@ -79,18 +69,15 @@ export async function extractFeatures(
     isPostRegeneration,
     isNearMaxAttempts,
     endpointSequence,
-    checkToHeartbeatRatio
+    checkToHeartbeatRatio,
   };
 }
 
-export async function trackEndpoint(
-  identityId: string,
-  endpoint: string
-): Promise<void> {
+export async function trackEndpoint(identityId: string, endpoint: string): Promise<void> {
   try {
     const key = `endpoints:${identityId}`;
     const existing = await db.get(key);
-    
+
     // ✅ CORRIGIDO: Validar se é JSON válido antes de parsear
     let sequence: string[] = [];
     if (existing && typeof existing === 'string') {
@@ -110,7 +97,7 @@ export async function trackEndpoint(
 
     await db.set(key, JSON.stringify(sequence), 3600);
   } catch {
-    console.error("[FEATURES] Failed to track endpoint:");
+    console.error('[FEATURES] Failed to track endpoint:');
   }
 }
 
@@ -118,7 +105,7 @@ async function getEndpointSequence(identityId: string): Promise<string[]> {
   try {
     const key = `endpoints:${identityId}`;
     const data = await db.get(key);
-    
+
     // ✅ CORRIGIDO: Validar se é JSON válido
     if (data && typeof data === 'string' && data.startsWith('[')) {
       try {
@@ -137,7 +124,7 @@ async function trackClientIP(identityId: string, ip: string): Promise<void> {
   try {
     const key = `ips:${identityId}`;
     const existing = await db.get(key);
-    
+
     // ✅ CORRIGIDO: Validar se é JSON válido
     let ips: string[] = [];
     if (existing && typeof existing === 'string') {
@@ -156,7 +143,7 @@ async function trackClientIP(identityId: string, ip: string): Promise<void> {
 
     await db.set(key, JSON.stringify(ips), 3600);
   } catch {
-    console.error("[FEATURES] Failed to track IP:");
+    console.error('[FEATURES] Failed to track IP:');
   }
 }
 
@@ -164,7 +151,7 @@ async function getIPHistory(identityId: string): Promise<string[]> {
   try {
     const key = `ips:${identityId}`;
     const data = await db.get(key);
-    
+
     // ✅ CORRIGIDO: Validar se é JSON válido
     if (data && typeof data === 'string' && data.startsWith('[')) {
       try {
@@ -187,7 +174,7 @@ async function trackFingerprint(
     const key = `fingerprint:${identityId}`;
     await db.set(key, JSON.stringify(fingerprint), 3600);
   } catch {
-    console.error("[FEATURES] Failed to track fingerprint:");
+    console.error('[FEATURES] Failed to track fingerprint:');
   }
 }
 
@@ -197,7 +184,7 @@ async function getLastFingerprint(
   try {
     const key = `fingerprint:${identityId}`;
     const data = await db.get(key);
-    
+
     // ✅ CORRIGIDO: Validar se é JSON válido
     if (data && typeof data === 'string' && data.startsWith('{')) {
       try {
@@ -220,7 +207,7 @@ async function trackGeolocation(
     const key = `geo:${identityId}`;
     await db.set(key, JSON.stringify(geo), 3600);
   } catch {
-    console.error("[FEATURES] Failed to track geolocation:");
+    console.error('[FEATURES] Failed to track geolocation:');
   }
 }
 
@@ -230,7 +217,7 @@ async function getLastGeolocation(
   try {
     const key = `geo:${identityId}`;
     const data = await db.get(key);
-    
+
     // ✅ CORRIGIDO: Validar se é JSON válido
     if (data && typeof data === 'string' && data.startsWith('{')) {
       try {

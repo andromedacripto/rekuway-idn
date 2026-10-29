@@ -16,8 +16,8 @@ export interface DefensiveResponse {
  * 🔒 LOCK REDIS ATÔMICO V2
  */
 async function acquireLock(identityId: string, timeoutMs = 5000): Promise<boolean> {
-  const lockKey    = `lock:${identityId}`;
-  const lockValue  = `${Date.now()}`;
+  const lockKey = `lock:${identityId}`;
+  const lockValue = `${Date.now()}`;
   const ttlSeconds = Math.ceil(timeoutMs / 1000);
 
   try {
@@ -25,7 +25,7 @@ async function acquireLock(identityId: string, timeoutMs = 5000): Promise<boolea
 
     if (!existing) {
       await db.set(lockKey, lockValue, ttlSeconds);
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
       const current = await db.get(lockKey);
 
       if (current === lockValue) {
@@ -74,7 +74,7 @@ export async function defensiveResponse(
       retries--;
       if (retries > 0) {
         safeLog(`[LOCK] 🔄 Retrying...`, { retriesLeft: retries });
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
     }
   }
@@ -82,18 +82,21 @@ export async function defensiveResponse(
   if (!lockAcquired) {
     safeLog(`[DEFENSE] ⚠️ Lock timeout — possible concurrent access`, { id: identity.id });
 
-    const concurrentKey   = `concurrent:${identity.id}`;
+    const concurrentKey = `concurrent:${identity.id}`;
     const concurrentCount = (((await db.get(concurrentKey)) as number) || 0) + 1;
     await db.set(concurrentKey, concurrentCount, 3600);
 
     safeLog(`[DEFENSE] Concurrent count:`, { id: identity.id, count: concurrentCount });
 
     if (concurrentCount >= 5) {
-      safeLog(`[DEFENSE] 🚨 Malicious parallel attack:`, { id: identity.id, count: concurrentCount });
+      safeLog(`[DEFENSE] 🚨 Malicious parallel attack:`, {
+        id: identity.id,
+        count: concurrentCount,
+      });
 
       const freshIdentity = await db.getIdentity(identity.id);
       if (freshIdentity && freshIdentity.isAlive) {
-        freshIdentity.attempts      = (freshIdentity.attempts || 0) + 5;
+        freshIdentity.attempts = (freshIdentity.attempts || 0) + 5;
         freshIdentity.totalAttempts = (freshIdentity.totalAttempts || 0) + 5;
         await db.setIdentity(freshIdentity.id, freshIdentity);
         await killIdentity(identity.id);
@@ -117,7 +120,11 @@ export async function defensiveResponse(
     const freshIdentity = await db.getIdentity(identity.id);
 
     if (!freshIdentity || !freshIdentity.isAlive) {
-      return { action: DefensiveAction.KILL, reason: 'Identity no longer exists or already killed', identity: null };
+      return {
+        action: DefensiveAction.KILL,
+        reason: 'Identity no longer exists or already killed',
+        identity: null,
+      };
     }
 
     const config = paranoiaConfig[freshIdentity.paranoiaLevel];
@@ -128,11 +135,11 @@ export async function defensiveResponse(
     }
 
     safeLog(`[DEFENSE] 🎯 Analysis:`, {
-      id:            freshIdentity.id,
+      id: freshIdentity.id,
       event,
-      attempts:      freshIdentity.attempts,
-      maxAttempts:   config.maxAttempts,
-      total:         freshIdentity.totalAttempts || 0,
+      attempts: freshIdentity.attempts,
+      maxAttempts: config.maxAttempts,
+      total: freshIdentity.totalAttempts || 0,
       regenerations: freshIdentity.regenerationCount || 0,
     });
 
@@ -148,7 +155,7 @@ export async function defensiveResponse(
 
     if (freshIdentity.totalAttempts && freshIdentity.totalAttempts >= config.maxAttempts) {
       safeLog(`[DEFENSE] 💀 KILL: persistent attacker`, {
-        id:    freshIdentity.id,
+        id: freshIdentity.id,
         total: freshIdentity.totalAttempts,
       });
       await killIdentity(freshIdentity.id);
@@ -186,8 +193,8 @@ export async function defensiveResponse(
     if (config.regenerateThreshold && freshIdentity.attempts >= config.regenerateThreshold) {
       if (!freshIdentity.regenerationCount || freshIdentity.regenerationCount === 0) {
         safeLog(`[DEFENSE] 🔄 REGENERATE: threshold reached`, {
-          id:        freshIdentity.id,
-          attempts:  freshIdentity.attempts,
+          id: freshIdentity.id,
+          attempts: freshIdentity.attempts,
           threshold: config.regenerateThreshold,
         });
         const newIdentity = await regenerateIdentity(freshIdentity.id);
@@ -216,7 +223,6 @@ export async function defensiveResponse(
       reason: 'Event logged but within acceptable threshold',
       identity: freshIdentity,
     };
-
   } catch (error) {
     safeError('[DEFENSE] ❌ Error in defensive response:', error);
     await killIdentity(identity.id);
@@ -257,16 +263,16 @@ export function detectThreatEvent(
 export async function checkDeadmanSwitch(identity: Identity): Promise<boolean> {
   if (identity.paranoiaLevel !== 'deadman') return false;
 
-  const config             = paranoiaConfig.deadman;
-  const now                = Date.now();
-  const lastHeartbeat      = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
+  const config = paranoiaConfig.deadman;
+  const now = Date.now();
+  const lastHeartbeat = identity.lastHeartbeat || identity.lastCheckIn || identity.createdAt;
   const timeSinceHeartbeat = now - lastHeartbeat;
-  const deadmanTimerMs     = (config.deadmanTimer || 60) * 1000;
+  const deadmanTimerMs = (config.deadmanTimer || 60) * 1000;
 
   safeLog(`[DEADMAN] 💓 Checking:`, {
-    id:            identity.id,
+    id: identity.id,
     lastHeartbeat: new Date(lastHeartbeat).toISOString(),
-    timeSinceSec:  Math.floor(timeSinceHeartbeat / 1000),
+    timeSinceSec: Math.floor(timeSinceHeartbeat / 1000),
     timerLimitSec: config.deadmanTimer,
   });
 
@@ -279,31 +285,45 @@ export async function checkDeadmanSwitch(identity: Identity): Promise<boolean> {
   return false;
 }
 
+/**
+ * Uma varredura do deadman: mata toda identidade `deadman` sem heartbeat no prazo.
+ * Usada pelo monitor (processo longo, ex.: Railway) e pela rota
+ * /internal/deadman-sweep (serverless, ex.: Vercel Cron).
+ */
+export async function runDeadmanSweep(): Promise<{ checked: number; killed: number }> {
+  const identities = await db.listIdentities();
+  let checked = 0;
+  let killed = 0;
+
+  for (const identity of identities) {
+    if (identity.paranoiaLevel === 'deadman' && identity.isAlive) {
+      checked++;
+      if (await checkDeadmanSwitch(identity)) {
+        killed++;
+        safeLog(`[DEADMAN] 💀 Killed by timeout:`, { id: identity.id });
+      }
+    }
+  }
+
+  if (checked > 0) {
+    safeLog(`[DEADMAN] Sweep complete:`, { checked, killed });
+  }
+  return { checked, killed };
+}
+
 export function startDeadmanMonitor() {
   safeLog('[DEADMAN] 🚀 Starting Deadman Monitor...');
 
+  let running = false;
   setInterval(async () => {
+    if (running) return; // evita varreduras sobrepostas
+    running = true;
     try {
-      const identities = await db.listIdentities();
-      let checked = 0;
-      let killed  = 0;
-
-      for (const identity of identities) {
-        if (identity.paranoiaLevel === 'deadman' && identity.isAlive) {
-          checked++;
-          const wasKilled = await checkDeadmanSwitch(identity);
-          if (wasKilled) {
-            killed++;
-            safeLog(`[DEADMAN] 💀 Killed by timeout:`, { id: identity.id });
-          }
-        }
-      }
-
-      if (checked > 0) {
-        safeLog(`[DEADMAN] Sweep complete:`, { checked, killed });
-      }
+      await runDeadmanSweep();
     } catch (error) {
       safeError('[DEADMAN] Monitor error:', error);
+    } finally {
+      running = false;
     }
   }, 5000);
 

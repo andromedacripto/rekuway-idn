@@ -33,6 +33,23 @@ class RedisKVStore {
     console.log('✅ Connected to Redis (Upstash REST API)');
   }
 
+  /** SCAN em lotes: KEYS é O(N) e bloqueia o Redis em escala. */
+  private async scanKeys(pattern: string): Promise<string[]> {
+    const found = new Set<string>();
+    let cursor: string | number = 0;
+    let guard = 0;
+    do {
+      const [next, batch]: [string, string[]] = await this.redis.scan(cursor, {
+        match: pattern,
+        count: 500,
+      });
+      batch.forEach((k) => found.add(k));
+      cursor = next;
+      guard++;
+    } while (String(cursor) !== '0' && guard < 10_000);
+    return Array.from(found);
+  }
+
   async set(key: string, value: unknown, ttlSeconds?: number): Promise<boolean> {
     try {
       const serialized = JSON.stringify(value);
@@ -45,7 +62,7 @@ class RedisKVStore {
 
       return true;
     } catch (error) {
-      console.error("[DB] Error setting key:", key, error);
+      console.error('[DB] Error setting key:', key, error);
       return false;
     }
   }
@@ -59,12 +76,16 @@ class RedisKVStore {
       if (typeof value === 'object' && value !== null) return value;
 
       if (typeof value === 'string') {
-        try { return JSON.parse(value); } catch { return value; }
+        try {
+          return JSON.parse(value);
+        } catch {
+          return value;
+        }
       }
 
       return value;
     } catch (error) {
-      console.error("[DB] Error getting key:", key, error);
+      console.error('[DB] Error getting key:', key, error);
       return null;
     }
   }
@@ -78,7 +99,7 @@ class RedisKVStore {
 
   async getIdentity(id: string): Promise<Identity | null> {
     const key = `identity:${id}`;
-    const value = await this.get(key) as Record<string, unknown> | null;
+    const value = (await this.get(key)) as Record<string, unknown> | null;
 
     if (!value) return null;
 
@@ -108,14 +129,14 @@ class RedisKVStore {
   }
 
   async listIdentities(): Promise<Identity[]> {
-    const keys = await this.redis.keys('identity:*');
+    const keys = await this.scanKeys('identity:*');
     if (keys.length === 0) return [];
 
     const values = await this.redis.mget(...keys);
 
     return values
-      .filter(v => v !== null)
-      .map(v => {
+      .filter((v) => v !== null)
+      .map((v) => {
         if (typeof v === 'object' && v !== null) return v as Identity;
         if (typeof v === 'string') {
           try {
@@ -127,12 +148,12 @@ class RedisKVStore {
         }
         return null;
       })
-      .filter(v => v !== null) as Identity[];
+      .filter((v) => v !== null) as Identity[];
   }
 
   async trackIP(ip: string): Promise<number> {
     const key = `ipTracking:${ip}`;
-    const value = await this.get(key) as IPTrackingData | null;
+    const value = (await this.get(key)) as IPTrackingData | null;
     const now = Date.now();
 
     if (value) {
@@ -162,17 +183,17 @@ class RedisKVStore {
 
   async getApiKey(hashedKey: string): Promise<Record<string, unknown> | null> {
     const key = `apikey:${hashedKey}`;
-    return await this.get(key) as Record<string, unknown> | null;
+    return (await this.get(key)) as Record<string, unknown> | null;
   }
 
   async listApiKeys(): Promise<Record<string, unknown>[]> {
-    const keys = await this.redis.keys('apikey:*');
+    const keys = await this.scanKeys('apikey:*');
     if (keys.length === 0) return [];
 
     const values = await this.redis.mget(...keys);
     return values
-      .filter(v => v !== null)
-      .map(v => typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>[];
+      .filter((v) => v !== null)
+      .map((v) => (typeof v === 'string' ? JSON.parse(v) : v)) as Record<string, unknown>[];
   }
 
   async deleteApiKey(hashedKey: string): Promise<boolean> {
@@ -182,11 +203,11 @@ class RedisKVStore {
   }
 
   async cleanExpired(): Promise<number> {
-    const keys = await this.redis.keys('identity:*');
+    const keys = await this.scanKeys('identity:*');
     let cleaned = 0;
 
     for (const key of keys) {
-      const value = await this.get(key) as Record<string, unknown> | null;
+      const value = (await this.get(key)) as Record<string, unknown> | null;
       if (value) {
         if (!value.isAlive || (value.expiresAt as number) < Date.now()) {
           await this.redis.del(key);
@@ -203,7 +224,7 @@ class RedisKVStore {
       const result = await this.redis.del(key);
       return result > 0;
     } catch (error) {
-      console.error("[DB] Error deleting key:", key, error);
+      console.error('[DB] Error deleting key:', key, error);
       return false;
     }
   }
@@ -213,17 +234,17 @@ class RedisKVStore {
       const result = await this.redis.exists(key);
       return result === 1;
     } catch (error) {
-      console.error("[DB] Error checking existence of:", key, error);
+      console.error('[DB] Error checking existence of:', key, error);
       return false;
     }
   }
 
   async keys(pattern: string): Promise<string[]> {
     try {
-      const keys = await this.redis.keys(pattern);
+      const keys = await this.scanKeys(pattern);
       return keys || [];
     } catch (error) {
-      console.error("[DB] Error listing keys:", pattern, error);
+      console.error('[DB] Error listing keys:', pattern, error);
       return [];
     }
   }
@@ -234,11 +255,13 @@ export const db = new RedisKVStore();
 
 // Auto-cleanup a cada 5 minutos
 setInterval(() => {
-  db.cleanExpired().then(count => {
-    if (count > 0) {
-      console.log(`[DB] 🧹 Cleaned ${count} expired identities`);
-    }
-  }).catch(err => {
-    console.error('[DB] ❌ Cleanup error:', err);
-  });
+  db.cleanExpired()
+    .then((count) => {
+      if (count > 0) {
+        console.log(`[DB] 🧹 Cleaned ${count} expired identities`);
+      }
+    })
+    .catch((err) => {
+      console.error('[DB] ❌ Cleanup error:', err);
+    });
 }, 300000);

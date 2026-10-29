@@ -1,0 +1,281 @@
+openapi: 3.0.3
+info:
+  title: Rekuway IDN API
+  version: 2.1.0
+  description: |
+    Identidades temporárias com defesa ativa (ALLOW, REGENERATE, LIE, KILL), bloqueio de sessão
+    com MFA e deadman switch.
+
+    **Respostas uniformes.** Por design, qualquer falha (credencial inválida, identidade
+    inexistente ou destruída, limite excedido, JSON inválido) devolve o mesmo corpo `Stealth`
+    com HTTP 200. Só quem apresenta uma credencial válida recebe detalhes (`STEP_UP_REQUIRED`,
+    `BLOCKED`). Não use o código HTTP para decidir sucesso: leia o corpo.
+servers:
+  - url: https://rekuway-idn-mvp.vercel.app
+    description: Produção (ajuste para o seu ambiente)
+tags:
+  - name: Identidade
+  - name: Administração
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Chave `rkwy_live_…`. Aceita somente no header Authorization.
+    internalSecret:
+      type: apiKey
+      in: header
+      name: x-internal-secret
+      description: Segredo compartilhado com o dashboard (INTERNAL_SECRET).
+  schemas:
+    ParanoiaLevel:
+      type: string
+      enum: [low, medium, high, deadman]
+    Stealth:
+      type: object
+      description: Resposta uniforme para qualquer falha.
+      properties:
+        success: { type: boolean, example: true }
+        status: { type: string, example: ok }
+        mode: { type: string, example: stealth }
+    Identity:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        publicKey: { type: string }
+        paranoiaLevel: { $ref: '#/components/schemas/ParanoiaLevel' }
+        expiresAt: { type: integer, format: int64, description: 'Epoch em ms' }
+    Mfa:
+      type: object
+      description: Exibido uma única vez, na criação (níveis medium, high e deadman).
+      properties:
+        secret: { type: string, description: 'TOTP em base32' }
+        otpauthUri: { type: string }
+    Credentials:
+      oneOf:
+        - type: object
+          required: [token]
+          properties:
+            token: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-f]+$' }
+        - type: object
+          required: [identityId, privateKey]
+          properties:
+            identityId: { type: string, format: uuid }
+            privateKey: { type: string }
+    CheckAllowed:
+      type: object
+      properties:
+        success: { type: boolean }
+        action: { type: string, enum: [ALLOWED] }
+        token: { type: string, description: 'Token rotacionado; use-o na próxima chamada' }
+        identity: { $ref: '#/components/schemas/Identity' }
+    StepUpRequired:
+      type: object
+      properties:
+        success: { type: boolean }
+        action: { type: string, enum: [STEP_UP_REQUIRED] }
+        reason: { type: string, example: risk_detected }
+        challengeId: { type: string, format: uuid }
+        methods:
+          type: array
+          items: { type: string, enum: [reauth, mfa] }
+        endpoint: { type: string, example: /identity/step-up }
+    Blocked:
+      type: object
+      properties:
+        success: { type: boolean }
+        action: { type: string, enum: [BLOCKED] }
+        retryAfter: { type: integer, description: 'Segundos' }
+paths:
+  /identity/new:
+    post:
+      tags: [Identidade]
+      summary: Cria uma identidade
+      security: [{ apiKey: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paranoiaLevel: { $ref: '#/components/schemas/ParanoiaLevel' }
+      responses:
+        '200':
+          description: Criada (`status` = created) ou resposta uniforme.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      success: { type: boolean }
+                      status: { type: string, enum: [created] }
+                      token: { type: string }
+                      expiresAt: { type: integer, format: int64 }
+                      mfa: { $ref: '#/components/schemas/Mfa' }
+                  - $ref: '#/components/schemas/Stealth'
+  /identity/check:
+    post:
+      tags: [Identidade]
+      summary: Valida a credencial e aplica o motor de defesa
+      description: |
+        Com credencial válida, o motor pontua o risco do uso. Acima do limite do nível, a sessão é
+        travada (`STEP_UP_REQUIRED`). Credencial inválida alimenta ALLOW, REGENERATE, LIE e KILL e
+        sempre devolve a resposta uniforme.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Credentials' }
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CheckAllowed'
+                  - $ref: '#/components/schemas/StepUpRequired'
+                  - $ref: '#/components/schemas/Blocked'
+                  - $ref: '#/components/schemas/Stealth'
+  /identity/step-up:
+    post:
+      tags: [Identidade]
+      summary: Reautentica e destrava uma sessão travada
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Credentials'
+                - type: object
+                  required: [challengeId]
+                  properties:
+                    challengeId: { type: string, format: uuid }
+                    code: { type: string, pattern: '^\d{6}$', description: 'Código TOTP' }
+      responses:
+        '200':
+          description: Destravada, falha com tentativas restantes, bloqueada, ou resposta uniforme.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CheckAllowed'
+                  - type: object
+                    properties:
+                      action: { type: string, enum: [STEP_UP_FAILED] }
+                      remainingAttempts: { type: integer }
+                  - $ref: '#/components/schemas/Blocked'
+                  - $ref: '#/components/schemas/Stealth'
+  /identity/heartbeat:
+    post:
+      tags: [Identidade]
+      summary: Renova o prazo de uma identidade deadman
+      description: Recusado (resposta uniforme) se a sessão estiver travada. Identidades usadas só por token renovam o prazo a cada `/identity/check`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityId, privateKey]
+              properties:
+                identityId: { type: string, format: uuid }
+                privateKey: { type: string }
+      responses:
+        '200': { description: 'Sucesso (`identity` presente) ou resposta uniforme' }
+  /identity/regenerate:
+    post:
+      tags: [Identidade]
+      summary: Troca a identidade por uma nova
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityId, privateKey]
+              properties:
+                identityId: { type: string, format: uuid }
+                privateKey: { type: string }
+      responses:
+        '200': { description: 'Credencial nova (`token`, `exp`, `lvl`) ou resposta uniforme' }
+  /identity/kill:
+    post:
+      tags: [Identidade]
+      summary: Destrói a identidade (sempre permitido a quem tem a chave)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityId, privateKey]
+              properties:
+                identityId: { type: string, format: uuid }
+                privateKey: { type: string }
+      responses:
+        '200': { description: '`{ "success": true }` ou resposta uniforme' }
+  /api-keys:
+    post:
+      tags: [Administração]
+      summary: Cria uma chave de API
+      security: [{ internalSecret: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, name]
+              properties:
+                userId: { type: string }
+                name: { type: string }
+                tier: { type: string, enum: [hobby, startup, business, enterprise] }
+      responses:
+        '201': { description: 'Criada; a chave completa aparece uma única vez' }
+        '401': { description: 'Segredo ausente ou inválido' }
+  /api-keys/{userId}:
+    get:
+      tags: [Administração]
+      summary: Lista as chaves (mascaradas) de um usuário
+      security: [{ internalSecret: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 'Lista' }
+        '401': { description: 'Não autorizado' }
+  /api-keys/{hashedKey}:
+    delete:
+      tags: [Administração]
+      summary: Revoga uma chave
+      security: [{ internalSecret: [] }]
+      parameters:
+        - { name: hashedKey, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 'Revogada' }
+        '404': { description: 'Não encontrada' }
+  /internal/identities/{id}/unlock:
+    post:
+      tags: [Administração]
+      summary: Suporte libera uma sessão travada ou bloqueada
+      security: [{ internalSecret: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 'Liberada' }
+        '401': { description: 'Não autorizado' }
+  /internal/deadman-sweep:
+    get:
+      tags: [Administração]
+      summary: Varredura do deadman para ambientes serverless
+      description: Aceita `x-internal-secret` ou `Authorization Bearer CRON_SECRET`.
+      security: [{ internalSecret: [] }]
+      responses:
+        '200': { description: '`{ checked, killed }`' }
+        '401': { description: 'Não autorizado' }
+  /health:
+    get:
+      summary: Liveness
+      responses:
+        '200': { description: 'ok' }

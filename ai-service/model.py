@@ -13,6 +13,8 @@ MOAT TÉCNICO:
 - Arquitetura preparada para federated learning (SOC invisível)
 """
 
+import hashlib
+import os
 import joblib
 import numpy as np
 from pathlib import Path
@@ -342,6 +344,13 @@ class AnomalyDetectorV2:
     def load_model(self):
         """Carrega modelo treinado"""
         try:
+            # joblib usa pickle: se MODEL_SHA256 estiver definido, só carrega o
+            # arquivo cujo hash confere (protege contra troca do modelo).
+            expected = os.getenv("MODEL_SHA256", "").strip().lower()
+            if expected:
+                actual = hashlib.sha256(Path(self.model_path).read_bytes()).hexdigest()
+                if actual != expected:
+                    raise ValueError("model file hash mismatch (MODEL_SHA256)")
             self.model = joblib.load(self.model_path)
             print(f"[MODEL] Model loaded from {self.model_path}")
         except Exception as e:

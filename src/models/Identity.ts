@@ -29,6 +29,8 @@ export interface Identity {
   lastCheckIn?: number;
   deadmanTimerSeconds?: number;
   isValidSignature?: boolean;
+  /** Segredo TOTP, cifrado em repouso (tokenVault, AAD = id da identidade). */
+  mfaSecret?: string;
 }
 
 /**
@@ -43,7 +45,7 @@ export enum ThreatEvent {
   RATE_LIMIT = 'rate_limit',
   RATE_LIMIT_EXCEEDED = 'rate_limit_exceeded',
   INVALID_KEY = 'invalid_key',
-  DEADMAN_TIMEOUT = 'deadman_timeout'
+  DEADMAN_TIMEOUT = 'deadman_timeout',
 }
 
 /**
@@ -56,7 +58,7 @@ export enum DefensiveAction {
   ALLOW = 'ALLOWED',
   LIE = 'LIE',
   REGENERATE = 'REGENERATE',
-  KILL = 'KILL'
+  KILL = 'KILL',
 }
 
 /**
