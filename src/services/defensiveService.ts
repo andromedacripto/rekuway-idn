@@ -3,6 +3,7 @@ import { db } from '../config/database';
 import { safeLog, safeError } from '../utils/sanitize';
 import paranoiaConfig from '../config/paranoia.json';
 import { killIdentity, regenerateIdentity } from './identityService';
+import { notifyDashboard } from './dashboardEvents';
 
 export interface DefensiveResponse {
   action: DefensiveAction;
@@ -301,6 +302,15 @@ export async function runDeadmanSweep(): Promise<{ checked: number; killed: numb
       if (await checkDeadmanSwitch(identity)) {
         killed++;
         safeLog(`[DEADMAN] 💀 Killed by timeout:`, { id: identity.id });
+        // Avisa o dashboard: sem isto, a identidade morria em silêncio quando o
+        // monitor automático (e não uma chamada do cliente) detectava o prazo vencido.
+        notifyDashboard({
+          userId: identity.userId,
+          type: 'DEADMAN',
+          severity: 'HIGH',
+          description: `Deadman timer expired — identity killed: ${identity.id}`,
+          blocked: true,
+        });
       }
     }
   }
