@@ -306,6 +306,7 @@ export async function runDeadmanSweep(): Promise<{ checked: number; killed: numb
         // monitor automático (e não uma chamada do cliente) detectava o prazo vencido.
         notifyDashboard({
           userId: identity.userId,
+          externalRef: identity.externalRef,
           type: 'DEADMAN',
           severity: 'HIGH',
           description: `Deadman timer expired — identity killed: ${identity.id}`,

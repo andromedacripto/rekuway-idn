@@ -81,6 +81,22 @@ Boas práticas:
 
 O que o modo agente **não** faz: não mede risco por IP (agentes mudam de IP o tempo todo), e o token é um segredo de portador: se vazar, vale até o prazo ou a revogação. Escopo, prazo, limite de usos e `revoke` limitam o estrago, mas não o impedem.
 
+## Por pessoa: acompanhar e revogar no desligamento
+
+Ao criar a identidade, passe um **código opaco da pessoa** (`externalRef`, por exemplo a matrícula `func-1042`). Ele não deve ser nome, e-mail nem CPF: quem associa o código ao nome é o seu dashboard.
+
+```ts
+const { session } = await rk.createSession('high', { externalRef: 'func-1042' });
+
+// Desligamento (chamado pelo seu RH): destrói todas as identidades vivas da pessoa
+const { revoked } = await rk.revokePerson('func-1042');
+```
+
+- Os eventos desta pessoa chegam ao dashboard com o código no `metadata.externalRef`, e o dashboard agrupa por ele.
+- `revokePerson` encerra as sessões **da Rekuway**. Bloquear o e-mail, o Microsoft 365 ou o Google Workspace continua sendo uma ação do seu sistema ou do provedor.
+- Cada empresa só alcança as próprias pessoas: o mesmo código em outra empresa não é afetado.
+- Se a Rekuway regenerar uma identidade (REGENERATE), a nova continua ligada à mesma pessoa.
+
 ## Chamando do seu servidor: repasse o contexto do usuário
 
 O risco por "IP novo" e "navegador diferente" usa o IP e o navegador de **quem chama a Rekuway**. Se o seu **servidor** chama em nome do usuário, a Rekuway só veria o IP do servidor. Por isso:

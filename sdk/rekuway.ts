@@ -158,10 +158,18 @@ export class Rekuway {
 
   /** Cria uma identidade. Exige `apiKey`. */
   async createIdentity(
-    level: ParanoiaLevel = 'medium'
+    level: ParanoiaLevel = 'medium',
+    options: { externalRef?: string } = {}
   ): Promise<{ token: string; expiresAt: number; mfa?: MfaEnrollment }> {
     if (!this.opts.apiKey) throw new RekuwayError('apiKey is required to create identities');
-    const body = await this.post('/identity/new', { paranoiaLevel: level }, this.opts.apiKey);
+    const body = await this.post(
+      '/identity/new',
+      {
+        paranoiaLevel: level,
+        ...(options.externalRef ? { externalRef: options.externalRef } : {}),
+      },
+      this.opts.apiKey
+    );
     if (body.status !== 'created' || typeof body.token !== 'string') {
       throw new RekuwayError(
         'identity was not created (invalid key, limit reached or server busy)'
@@ -174,9 +182,19 @@ export class Rekuway {
   }
 
   /** Cria a identidade e já devolve uma sessão que rotaciona o token sozinha. */
-  async createSession(level: ParanoiaLevel = 'medium') {
-    const { token, expiresAt, mfa } = await this.createIdentity(level);
+  async createSession(level: ParanoiaLevel = 'medium', options: { externalRef?: string } = {}) {
+    const { token, expiresAt, mfa } = await this.createIdentity(level, options);
     return { session: new RekuwaySession(this, token), expiresAt, mfa };
+  }
+
+  /**
+   * Desligamento: destrói todas as identidades vivas de uma pessoa (o `externalRef`
+   * usado ao criá-las). Exige `apiKey`. Devolve quantas identidades foram destruídas.
+   * Isto encerra as sessões da Rekuway; o login no seu sistema continua sendo seu.
+   */
+  async revokePerson(externalRef: string): Promise<{ revoked: number }> {
+    const body = await this.call('POST', '/identity/people/revoke', { externalRef });
+    return { revoked: Number(body.revoked ?? 0) };
   }
 
   async check(credentials: Credentials, context?: EndUserContext): Promise<CheckResult> {

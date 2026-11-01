@@ -247,6 +247,8 @@ Diferenças em relação às identidades humanas: o token é **estável** (vári
 | `POST` | `/identity/check`       | token ou chave privada  | Valida e aplica o motor de defesa.            |
 | `POST` | `/identity/step-up`     | token ou chave privada + `challengeId` (+ `code` TOTP) | Reautentica e destrava a sessão. |
 | `POST` | `/internal/identities/:id/unlock` | `x-internal-secret` | Suporte: libera uma sessão travada ou bloqueada. |
+| `POST` | `/identity/people/revoke` | chave de API + `externalRef` | Desligamento: destrói todas as identidades vivas da pessoa (só as da sua empresa). |
+| `POST` | `/internal/people/revoke` | `x-internal-secret` + `userId` + `externalRef` | Dashboard: o mesmo, a pedido do botão "Revogar". |
 | `POST` | `/identity/heartbeat`   | chave privada           | Renova o prazo do nível `deadman`.            |
 | `POST` | `/identity/regenerate`  | chave privada           | Regenera a identidade sob demanda.            |
 | `POST` | `/identity/kill`        | chave privada           | Destrói a identidade.                         |

@@ -1,10 +1,34 @@
 import { z } from 'zod';
 
+// Sem ':' nem curingas: o código entra em chaves do Redis.
+export const externalRefSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9._@-]+$/);
+
 // ─────────────────────────────────────────────
 //  POST /identity/new
 // ─────────────────────────────────────────────
 export const newIdentitySchema = z.object({
   paranoiaLevel: z.enum(['low', 'medium', 'high', 'deadman']).default('medium'),
+  // Código opaco da pessoa (ex.: matrícula). Não use nome, e-mail nem CPF.
+  externalRef: externalRefSchema.optional(),
+});
+
+// ─────────────────────────────────────────────
+//  POST /identity/people/revoke  e  POST /internal/people/revoke
+// ─────────────────────────────────────────────
+export const revokePersonSchema = z.object({
+  externalRef: externalRefSchema,
+});
+export const revokePersonInternalSchema = z.object({
+  userId: z
+    .string()
+    .min(1)
+    .max(128)
+    .regex(/^[A-Za-z0-9._@-]+$/),
+  externalRef: externalRefSchema,
 });
 
 // ─────────────────────────────────────────────

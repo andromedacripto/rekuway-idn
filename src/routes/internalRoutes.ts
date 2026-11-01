@@ -2,9 +2,27 @@ import { Router, Request, Response } from 'express';
 import { db } from '../config/database';
 import { runDeadmanSweep } from '../services/defensiveService';
 import { clearSession } from '../services/sessionGuard';
+import { revokePerson } from '../services/identityService';
+import { revokePersonInternalSchema } from './validation';
 import { safeEqualSecret, validateInternalSecret } from '../utils/internalSecret';
 
 const router = Router();
+
+// Dashboard: botão "Revogar acessos desta pessoa". Só com o segredo interno.
+router.post('/people/revoke', async (req: Request, res: Response) => {
+  if (!validateInternalSecret(req.headers['x-internal-secret'])) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const parsed = revokePersonInternalSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid request' });
+  try {
+    const { revoked } = await revokePerson(parsed.data.userId, parsed.data.externalRef);
+    return res.json({ success: true, revoked });
+  } catch (error) {
+    console.error('people/revoke error:', error);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
 
 router.get('/stats', async (req: Request, res: Response) => {
   try {

@@ -82,11 +82,15 @@ export async function regenerateIdentity(
     const newIdentityResult = await createIdentity(oldIdentity.paranoiaLevel);
     const newIdentity = newIdentityResult.identity;
 
+    // A identidade nova continua sendo da mesma empresa e da mesma pessoa.
+    newIdentity.userId = oldIdentity.userId;
+    newIdentity.externalRef = oldIdentity.externalRef;
     newIdentity.totalAttempts = oldIdentity.totalAttempts || 0;
     newIdentity.regenerationCount = (oldIdentity.regenerationCount || 0) + 1;
     newIdentity.attemptsAfterRegenerate = 0;
 
     await db.setIdentity(newIdentity.id, newIdentity);
+    await indexPerson(newIdentity);
 
     safeLog(`[IDENTITY] ✅ Regenerated:`, {
       oldId: oldIdentityId,
@@ -180,4 +184,40 @@ export async function validateIdentity(
     safeError('[IDENTITY] ❌ Error validating identity:', error);
     return null;
   }
+}
+
+// ─────────────────────────────────────────────
+//  Pessoa (externalRef): índice e revogação
+// ─────────────────────────────────────────────
+
+const personKey = (userId: string, ref: string, identityId: string) =>
+  `person:${userId}:${ref}:${identityId}`;
+
+/** Registra a identidade no índice da pessoa. Sem userId ou externalRef, não faz nada. */
+export async function indexPerson(identity: Identity): Promise<void> {
+  if (!identity.userId || !identity.externalRef) return;
+  const ttl = Math.max(60, Math.ceil((identity.expiresAt - Date.now()) / 1000) + 60);
+  await db.set(personKey(identity.userId, identity.externalRef, identity.id), '1', ttl);
+}
+
+/**
+ * Destrói TODAS as identidades vivas de uma pessoa de uma empresa.
+ * Só mexe em identidades cujo userId seja o da empresa que pediu.
+ */
+export async function revokePerson(
+  userId: string,
+  externalRef: string
+): Promise<{ revoked: number }> {
+  const keys = await db.keys(`person:${userId}:${externalRef}:*`);
+  let revoked = 0;
+  for (const key of keys) {
+    const identityId = key.slice(key.lastIndexOf(':') + 1);
+    const identity = await db.getIdentity(identityId);
+    if (identity && identity.userId === userId && identity.externalRef === externalRef) {
+      if (await killIdentity(identityId)) revoked++;
+    }
+    await db.delete(key);
+  }
+  safeLog(`[IDENTITY] 🚫 Person revoked:`, { userId, externalRef, revoked });
+  return { revoked };
 }
