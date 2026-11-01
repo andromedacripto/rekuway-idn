@@ -5,6 +5,8 @@ import {
   validateIdentity,
   killIdentity,
   regenerateIdentity,
+  indexPerson,
+  revokePerson,
 } from '../services/identityService';
 import { updateHeartbeat } from '../services/heartbeat';
 import { db } from '../config/database';
@@ -38,6 +40,7 @@ import {
 } from '../services/sessionGuard';
 import {
   newIdentitySchema,
+  revokePersonSchema,
   checkIdentitySchema,
   heartbeatSchema,
   regenerateSchema,
@@ -215,6 +218,33 @@ async function getGeoAndVPN(
 // ─────────────────────────────────────────────
 //  POST /identity/new
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  POST /identity/people/revoke
+//  Desligamento: destrói todas as identidades vivas de uma pessoa da sua empresa.
+//  Chamada pelo seu RH/sistema, com a chave de API da empresa.
+// ─────────────────────────────────────────────
+router.post('/people/revoke', requireApiKey, async (req: Request, res: Response) => {
+  const parsed = parseBody(revokePersonSchema, req.body);
+  const userId = req.apiKey?.userId;
+  if (!parsed.success || !userId) return res.status(400).json({ error: 'Invalid request' });
+  try {
+    const { externalRef } = parsed.data;
+    const { revoked } = await revokePerson(userId, externalRef);
+    notifyDashboard({
+      userId,
+      externalRef,
+      type: 'REVOKE',
+      severity: 'MEDIUM',
+      description: `Person access revoked via API: ${revoked} identities destroyed`,
+      blocked: true,
+    });
+    return res.status(200).json({ success: true, revoked });
+  } catch (error) {
+    safeError('[IDENTITY] ❌ people/revoke failed:', error);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 router.post(
   '/new',
   requireApiKey,
@@ -223,13 +253,15 @@ router.post(
     try {
       const parsed = parseBody(newIdentitySchema, req.body);
       if (!parsed.success) return res.status(400).json(STEALTH_RESPONSE);
-      const { paranoiaLevel } = parsed.data;
+      const { paranoiaLevel, externalRef } = parsed.data;
 
       const result = await createIdentity(paranoiaLevel);
 
       if (req.apiKey?.userId) {
         result.identity.userId = req.apiKey.userId;
+        if (externalRef) result.identity.externalRef = externalRef;
         await db.setIdentity(result.identity.id, result.identity);
+        await indexPerson(result.identity);
       }
 
       // MFA (TOTP): emitido nos níveis cuja política exige. O segredo aparece
@@ -259,6 +291,7 @@ router.post(
             severity: 'LOW',
             description: `New identity created: ${result.identity.id} [${paranoiaLevel}]`,
             blocked: false,
+            metadata: externalRef ? { externalRef } : undefined,
           }),
           signal: AbortSignal.timeout(3000),
         }).catch(() => {});
@@ -372,7 +405,10 @@ router.post('/check', async (req: Request, res: Response) => {
             blocked: true,
             ipAddress: clientIP,
             userAgent,
-            metadata: await getGeoAndVPN(clientIP),
+            metadata: {
+              ...(await getGeoAndVPN(clientIP)),
+              ...(identity?.externalRef ? { externalRef: identity.externalRef } : {}),
+            },
           }),
           signal: AbortSignal.timeout(3000),
         }).catch(() => {});
@@ -414,7 +450,10 @@ router.post('/check', async (req: Request, res: Response) => {
             blocked: true,
             ipAddress: clientIP,
             userAgent,
-            metadata: await getGeoAndVPN(clientIP),
+            metadata: {
+              ...(await getGeoAndVPN(clientIP)),
+              ...(identity?.externalRef ? { externalRef: identity.externalRef } : {}),
+            },
           }),
           signal: AbortSignal.timeout(3000),
         }
@@ -464,6 +503,7 @@ router.post('/check', async (req: Request, res: Response) => {
           });
           notifyDashboard({
             userId: identity.userId,
+            externalRef: identity.externalRef,
             type: 'SESSION_LOCKED',
             severity: 'HIGH',
             description: `Session locked, step-up required on identity: ${identityId} [${identity.paranoiaLevel}]`,
@@ -595,13 +635,17 @@ router.post('/check', async (req: Request, res: Response) => {
           },
           body: JSON.stringify({
             userId: identity.userId,
+            externalRef: identity.externalRef,
             type: 'ATTACK_BLOCKED',
             severity: 'CRITICAL',
             description: `Identity KILLED after attacks: ${identityId}`,
             blocked: true,
             ipAddress: clientIP,
             userAgent,
-            metadata: await getGeoAndVPN(clientIP),
+            metadata: {
+              ...(await getGeoAndVPN(clientIP)),
+              ...(identity?.externalRef ? { externalRef: identity.externalRef } : {}),
+            },
           }),
           signal: AbortSignal.timeout(3000),
         }
@@ -676,7 +720,10 @@ router.post('/check', async (req: Request, res: Response) => {
             blocked: true,
             ipAddress: clientIP,
             userAgent,
-            metadata: await getGeoAndVPN(clientIP),
+            metadata: {
+              ...(await getGeoAndVPN(clientIP)),
+              ...(identity?.externalRef ? { externalRef: identity.externalRef } : {}),
+            },
           }),
           signal: AbortSignal.timeout(3000),
         }
@@ -723,6 +770,7 @@ router.post('/check', async (req: Request, res: Response) => {
             severity: 'MEDIUM',
             description: `Identity rotated: ${identityId} → ${newIdentity.id}`,
             blocked: false,
+            metadata: identity.externalRef ? { externalRef: identity.externalRef } : undefined,
           }),
           signal: AbortSignal.timeout(3000),
         }
@@ -747,7 +795,10 @@ router.post('/check', async (req: Request, res: Response) => {
         blocked: true,
         ipAddress: clientIP,
         userAgent,
-        metadata: await getGeoAndVPN(clientIP),
+        metadata: {
+          ...(await getGeoAndVPN(clientIP)),
+          ...(identity?.externalRef ? { externalRef: identity.externalRef } : {}),
+        },
       }),
       signal: AbortSignal.timeout(3000),
     }).catch(() => {});
@@ -817,6 +868,7 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
       await lockSession(identityId, hbRisk);
       notifyDashboard({
         userId: identity.userId,
+        externalRef: identity.externalRef,
         type: 'SESSION_LOCKED',
         severity: 'HIGH',
         description: `Heartbeat from untrusted IP — session locked: ${identityId}`,
@@ -1031,6 +1083,7 @@ router.post('/step-up', async (req: Request, res: Response) => {
         await killIdentity(identityId);
         notifyDashboard({
           userId: identity.userId,
+          externalRef: identity.externalRef,
           type: 'SESSION_KILLED',
           severity: 'CRITICAL',
           description: `Step-up failed repeatedly — identity destroyed: ${identityId} [${identity.paranoiaLevel}]`,
@@ -1042,6 +1095,7 @@ router.post('/step-up', async (req: Request, res: Response) => {
       if (outcome === 'blocked') {
         notifyDashboard({
           userId: identity.userId,
+          externalRef: identity.externalRef,
           type: 'SESSION_BLOCKED',
           severity: 'CRITICAL',
           description: `Step-up failed repeatedly — session blocked: ${identityId} [${identity.paranoiaLevel}]`,
@@ -1076,6 +1130,7 @@ router.post('/step-up', async (req: Request, res: Response) => {
     safeLog('[SESSION] Step-up OK — session unlocked', { identityId });
     notifyDashboard({
       userId: identity.userId,
+      externalRef: identity.externalRef,
       type: 'SESSION_UNLOCKED',
       severity: 'LOW',
       description: `Step-up completed on identity: ${identityId}`,

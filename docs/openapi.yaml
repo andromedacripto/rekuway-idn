@@ -113,6 +113,11 @@ paths:
               type: object
               properties:
                 paranoiaLevel: { $ref: '#/components/schemas/ParanoiaLevel' }
+                externalRef:
+                  type: string
+                  maxLength: 64
+                  pattern: '^[A-Za-z0-9._@-]+$'
+                  description: 'Código opaco da pessoa, como a matrícula. Não use nome, e-mail nem CPF.'
       responses:
         '200':
           description: Criada (`status` = created) ou resposta uniforme.
@@ -128,6 +133,34 @@ paths:
                       expiresAt: { type: integer, format: int64 }
                       mfa: { $ref: '#/components/schemas/Mfa' }
                   - $ref: '#/components/schemas/Stealth'
+  /identity/people/revoke:
+    post:
+      tags: [Identidade]
+      summary: Revoga todas as identidades vivas de uma pessoa (desligamento)
+      description: |
+        Destrói as identidades da pessoa que pertencem à empresa dona da chave de API.
+        Encerra as sessões da Rekuway; não bloqueia contas em outros sistemas.
+      security: [{ apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [externalRef]
+              properties:
+                externalRef: { type: string, maxLength: 64, pattern: '^[A-Za-z0-9._@-]+$' }
+      responses:
+        '200':
+          description: Quantas identidades foram destruídas.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  revoked: { type: integer }
+        '400': { description: Requisição inválida }
   /identity/check:
     post:
       parameters:

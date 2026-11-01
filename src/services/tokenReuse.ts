@@ -72,6 +72,7 @@ export async function handleTokenReuse(
   });
   notifyDashboard({
     userId: identity.userId,
+    externalRef: identity.externalRef,
     type: 'TOKEN_REUSE',
     severity: 'CRITICAL',
     description: `Rotated token reused ${Math.round(ageMs / 1000)}s after rotation: possible token theft, identity destroyed: ${t.identityId} [${identity.paranoiaLevel}]`,

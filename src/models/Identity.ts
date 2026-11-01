@@ -29,6 +29,8 @@ export interface Identity {
   lastCheckIn?: number;
   deadmanTimerSeconds?: number;
   isValidSignature?: boolean;
+  /** Código opaco da pessoa dona desta identidade (definido pelo cliente). Sem nome nem dado pessoal. */
+  externalRef?: string;
   /** Segredo TOTP, cifrado em repouso (tokenVault, AAD = id da identidade). */
   mfaSecret?: string;
 }
